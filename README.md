@@ -95,6 +95,14 @@ python 收纳盒.py   # 或双击 启动收纳盒.bat（后台静默运行）
 
 ## 📜 License
 
-MIT License — 详见 `LICENSE` 文件。
+本项目基于 **GNU General Public License v3.0 (GPL v3)** 开源。
+
+简单来说：
+- ✅ 任何人可以免费使用、修改、分发、甚至商用
+- ⚠️ 但修改后的版本必须同样以 GPL v3 开源
+- ⚠️ 必须标注原作者 Lexinm-Code
+- ❌ 不允许闭源换皮拿去卖
+
+完整协议详见 `LICENSE` 文件。
 
 Copyright © 2025 Lexinm-Code
