@@ -56,23 +56,24 @@ open(_启动日志路径, "w", encoding="utf-8").close()
 # 第一条日志：脚本刚开始执行（此时第三方库一个都还没加载）
 写启动日志("脚本开始执行")
 
-from PyQt5.QtCore import (Qt, QSize, QTimer, QEvent, pyqtSignal, QMimeData,
+from PyQt5.QtCore import (Qt, QRect, QSize, QTimer, QEvent, pyqtSignal, QMimeData,
                           QFileInfo, QSharedMemory, QAbstractNativeEventFilter)
 写启动日志("PyQt5.QtCore 加载完成")
-from PyQt5.QtGui import (QColor, QCursor, QFont, QIcon, QKeySequence, QDrag,
-                         QPainter, QPixmap, QGuiApplication)
+from PyQt5.QtGui import (QColor, QCursor, QFont, QIcon, QImage, QKeySequence,
+                         QDrag, QPainter, QPixmap, QGuiApplication)
 from PyQt5.QtWidgets import (QApplication, QAction, QCheckBox, QDialog, QFrame,
                              QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMenu,
                              QMessageBox, QPushButton, QKeySequenceEdit, QScrollArea,
                              QSpinBox, QStyle, QSystemTrayIcon, QTabBar, QTabWidget,
                              QToolButton, QVBoxLayout, QWidget, QFileIconProvider,
-                             QStackedWidget)
+                             QStackedWidget, QLineEdit, QComboBox)
 写启动日志("PyQt5 界面库全部加载完成")
 
 import win32api
 import win32con
 import win32com.client
 import win32gui  # 用来做"无边框窗口拖边缘缩放"时的坐标换算
+import winsound  # 内置库：播 Windows 系统音效，给盒内图标做音效提示
 写启动日志("win32 系统库加载完成")
 
 from 桌面钩子 import 桌面双击钩子
@@ -89,6 +90,7 @@ if getattr(sys, 'frozen', False):
 else:
     程序目录 = os.path.dirname(os.path.abspath(__file__))  # 开发时：源码所在目录
 数据目录 = os.path.join(程序目录, "收纳盒数据")
+版本 = "1.0.1"  # 托盘"关于"对话框显示用
 配置文件 = os.path.join(数据目录, "配置.json")
 内部拖放格式 = "application/x-shouna-tiaomu"
 非法文件字符 = re.compile(r'[\\/:*?"<>|]')
@@ -152,17 +154,23 @@ def 是否在桌面(路径):
 
 def _取启动命令():
     """拼出开机自启时要执行的命令行字符串。
-    Run 注册表的值是 cmd.exe 来执行的（不是 Python！）。
-    打包后（sys.frozen=True）直接启动 exe 就行，不用 bat；
-    开发时用 bat 里调 pythonw.exe。"""
+    注意：Run 注册表的值是系统直接执行的（相当于 CreateProcess），
+    不经过 cmd！之前写 "cmd.exe /c start ... bat" 会在开机时闪一个
+    黑窗口（重启后弹"鬼东西"的根源）；而且 "start" 开头在 Run 键里
+    根本没人解析，exe 版那样写自启其实是失效的。
+    正确姿势：开发时用 pythonw.exe 直接跑脚本（pythonw 没有控制台，
+    开机不会弹任何窗口）；打包后直接写 exe 路径。"""
     if getattr(sys, 'frozen', False):
-        # 打包后：注册表直接启动 exe，不用套 cmd /c start 了
-        # 但加个 "" 当 start 的标题参数，防止路径被误解析
-        return f'start "" "{sys.executable}"'
-    else:
-        # 开发时：cmd /c start 调 bat，bat 里再调 pythonw.exe
-        bat路径 = os.path.join(程序目录, "启动收纳盒.bat")
-        return f'cmd.exe /c start "" "{bat路径}"'
+        # 打包后：注册表直接写 exe 路径，系统自己能执行
+        return f'"{sys.executable}"'
+    # 开发时：把 python.exe 换成同目录的 pythonw.exe，直接带脚本路径
+    解释器 = sys.executable
+    if 解释器.lower().endswith("python.exe"):
+        pythonw = os.path.join(os.path.dirname(解释器), "pythonw.exe")
+        if os.path.exists(pythonw):
+            解释器 = pythonw
+    脚本 = os.path.abspath(__file__)
+    return f'"{解释器}" "{脚本}"'
 
 def 设开机自启(开启):
     """开启或关闭开机自启。写入/删除 HKCU Run 键下的一个值。
@@ -228,17 +236,181 @@ def 加载配置():
         "高": int(数据.get("高", 默认高)),
         # 图标之间的间距 + 页面内边距
         "图标间距": int(数据.get("图标间距", 默认图标间距)),
+        # 音效提示开关（悬停"叮" / 单击"嗒" / 双击"咚"），默认开
+        "音效": bool(数据.get("音效", True)),
+        # 常用置顶：打开次数多的图标自动排最前（默认关，避免和用户手动排序打架）
+        "常用置顶": bool(数据.get("常用置顶", False)),
+        # 按类型自动归类：拖入文件时按后缀分进 文档/图片/视频/音乐/程序/压缩包/其他
+        "自动分类": bool(数据.get("自动分类", True)),
+        # 屏幕边缘唤出：鼠标顶住窗口停靠的那条屏幕边约 0.3 秒自动弹出（拖到哪边认哪边）
+        "边缘唤出": bool(数据.get("边缘唤出", True)),
+        # 配色主题：深色 / 浅色 / 玻璃
+        "主题": str(数据.get("主题", "深色")),
         "分类": 数据.get("分类") or [{"名称": "常用", "条目": []}],
+        # 类型分类只预置一次：用户之后删掉的分类不会被重新造出来
+        "类型分类已预置": bool(数据.get("类型分类已预置", False)),
     }
     for 分类 in 配置["分类"]:
         分类.setdefault("名称", "未命名")
         分类.setdefault("条目", [])
+    if not 配置["类型分类已预置"]:
+        # 第一次启动：左边分类栏常驻建好"全部"总览 + 七种类型分类。
+        # "全部"是虚拟分类（聚合视图，不存文件），永远排最前面
+        if not any(c.get("虚拟") for c in 配置["分类"]):
+            配置["分类"].insert(0, {"名称": "全部", "条目": [], "虚拟": True})
+        for 类型名, _后缀组 in 类型分类表:
+            if not any(c["名称"] == 类型名 for c in 配置["分类"]):
+                配置["分类"].append({"名称": 类型名, "条目": []})
+        if not any(c["名称"] == "其他" for c in 配置["分类"]):
+            配置["分类"].append({"名称": "其他", "条目": []})
+        for 分类 in 配置["分类"]:
+            try:
+                os.makedirs(os.path.join(数据目录, 分类["名称"]), exist_ok=True)
+            except Exception:
+                pass
+        配置["类型分类已预置"] = True
+        保存配置()
+    # 双区导航归属（每次加载重算）：预置类型分类和"全部"走左边按钮列，
+    # 用户自己的分类（常用/魔兽争霸/以后新建的）走顶部标签栏
+    类型名集 = {名 for 名, _组 in 类型分类表} | {"其他"}
+    for 分类 in 配置["分类"]:
+        分类["类型"] = bool(分类.get("虚拟")) or 分类["名称"] in 类型名集
 
 
 def 保存配置():
     os.makedirs(数据目录, exist_ok=True)
     with open(配置文件, "w", encoding="utf-8") as f:
         json.dump(配置, f, ensure_ascii=False, indent=2)
+
+
+# ---------------- 音效提示 ----------------
+# 清脆小"叮"：不用系统那几声浑厚提示音，改用纯标准库（wave+math）现场合成
+# 三个短促高音拨弦 wav（指数衰减、尾巴干脆、音量偏低），winsound 从内存异步
+# 播放——不卡界面、不依赖磁盘文件、不跟随系统声音方案，音量大小由合成参数控制。
+# 设置里关掉"音效提示"后（配置["音效"]=False）全部静音。
+_悬停音效时刻 = [0.0]  # 悬停限流：鼠标快速划过一串图标时不要"哒哒哒"连响
+
+
+def _合成wav(频率, 时长毫秒, 音量=0.18):
+    """合成单声道 22050Hz 16bit 的短拨弦音字节：基频+八度泛音，指数衰减包络"""
+    import math
+    import struct
+    import wave
+    import io as _io
+    采样率 = 22050
+    缓冲 = _io.BytesIO()
+    with wave.open(缓冲, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(采样率)
+        帧 = bytearray()
+        总数 = int(采样率 * 时长毫秒 / 1000.0)
+        # 短音衰减更快：只留"叮"的一下，没有嗡嗡拖尾
+        衰减 = 40.0 if 时长毫秒 <= 80 else 26.0
+        for i in range(总数):
+            t = i / 采样率
+            包络 = math.exp(-t * 衰减)
+            采样 = (math.sin(2 * math.pi * 频率 * t) * 0.72 +
+                    math.sin(2 * math.pi * 频率 * 2 * t) * 0.28)  # 八度泛音让音色更透亮
+            值 = int(采样 * 包络 * 音量 * 32767)
+            帧 += struct.pack("<h", max(-32767, min(32767, 值)))
+        w.writeframes(bytes(帧))
+    return 缓冲.getvalue()
+
+
+# 注意：Windows 的 PlaySound 不支持"内存 + 异步"组合（SND_MEMORY|SND_ASYNC 直接报错），
+# 所以启动时把合成音写成 wav 文件放在数据目录，播放走"文件 + 异步"这条路。
+音效目录 = os.path.join(数据目录, "音效")
+_音效规格 = {
+    "悬停": (1318.5, 90),   # E6：轻柔清亮"叮~"
+    "单击": (1568.0, 60),   # G6：更短更脆"哒"
+    "双击": (1046.5, 140),  # C6：稍饱满的"叮咚"
+}
+
+
+def _准备音效文件():
+    """合成并写盘；已存在就跳过（想调音色删掉这些 wav 重启即可重新生成）"""
+    os.makedirs(音效目录, exist_ok=True)
+    for 名称, (频率, 时长) in _音效规格.items():
+        文件 = os.path.join(音效目录, 名称 + ".wav")
+        if not os.path.exists(文件):
+            with open(文件, "wb") as f:
+                f.write(_合成wav(频率, 时长, 音量=0.25))
+
+
+try:
+    _准备音效文件()
+except Exception:
+    pass  # 合成/写盘失败就静音兜底，绝不弹窗打扰
+
+
+def _播放音效(名称):
+    if not 配置.get("音效", True):
+        return
+    文件 = os.path.join(音效目录, 名称 + ".wav")
+    if not os.path.exists(文件):
+        return
+    try:
+        # 文件 + 异步：立即返回不卡界面，新声音顶掉未播完的旧声音
+        winsound.PlaySound(文件, winsound.SND_FILENAME | winsound.SND_ASYNC)
+    except Exception:
+        pass
+
+
+def 播放悬停音效():
+    """鼠标移到图标上：轻柔“叮”，0.18 秒内不重复"""
+    此刻 = time.perf_counter()
+    if 此刻 - _悬停音效时刻[0] < 0.18:
+        return
+    _悬停音效时刻[0] = 此刻
+    _播放音效("悬停")
+
+
+def 播放单击音效():
+    """单击图标：一声清脆短音“哒”"""
+    _播放音效("单击")
+
+
+def 播放双击音效():
+    """双击图标：稍饱满的“叮咚”一声"""
+    _播放音效("双击")
+
+
+# ---------------- 按类型自动归类 ----------------
+
+类型分类表 = [
+    ("文档", (".txt", ".md", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+              ".pdf", ".rtf", ".csv")),
+    ("图片", (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico", ".tiff", ".svg")),
+    ("视频", (".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".webm", ".mpg")),
+    ("音乐", (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".mid")),
+    ("程序", (".exe", ".lnk", ".msi", ".bat", ".cmd", ".url")),
+    ("压缩包", (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2")),
+]
+
+
+def 取类型分类(路径):
+    """按文件后缀判断该进哪个自动分类；文件夹和认不出的一律进"其他" """
+    if os.path.isdir(路径):
+        return "其他"
+    后缀 = os.path.splitext(路径)[1].lower()
+    for 名, 后缀组 in 类型分类表:
+        if 后缀 in 后缀组:
+            return 名
+    return "其他"
+
+
+def 确保分类(名称):
+    """在配置里找同名分类，没有就现场新建（含建文件夹），返回分类 dict"""
+    分类 = next((c for c in 配置["分类"] if c["名称"] == 名称), None)
+    if 分类 is None:
+        分类 = {"名称": 名称, "条目": []}
+        配置["分类"].append(分类)
+        try:
+            os.makedirs(os.path.join(数据目录, 名称), exist_ok=True)
+        except Exception:
+            pass
+    return 分类
 
 
 # ---------------- 快捷方式与文件辅助 ----------------
@@ -306,24 +478,93 @@ def 生成程序图标(文字="收"):
     return QIcon(画布)
 
 
+def _不透明包围盒(图):
+    """逐像素扫 alpha，返回不透明内容的最小外接矩形；全不透明则返回整图矩形"""
+    w, h = 图.width(), 图.height()
+    左, 上, 右, 下 = w, h, -1, -1
+    for y in range(h):
+        for x in range(w):
+            if (图.pixel(x, y) >> 24) & 0xFF:
+                if x < 左:
+                    左 = x
+                if x > 右:
+                    右 = x
+                if y < 上:
+                    上 = y
+                if y > 下:
+                    下 = y
+    if 右 < 0:
+        return 图.rect()  # 全透明兜底当无留白
+    return QRect(左, 上, 右 - 左 + 1, 下 - 上 + 1)
+
+
+def _规格化(图标, 边=36):
+    """系统图标原生尺寸/画布留白各不相同，直接缩放会显得一大一小。
+    取最大的一张原生图，裁掉四周透明留白，再等比撑满 边x边 画布，视觉就齐了。"""
+    try:
+        名列表 = 图标.availableSizes()
+        if not 名列表:
+            return 图标
+        最大 = max(名列表, key=lambda s: s.width() * s.height())
+        pix = 图标.pixmap(最大)
+        if pix.isNull():
+            return 图标
+        if not pix.hasAlphaChannel():
+            return 图标  # 无透明通道说明是满幅位图，没有留白可裁
+        图 = pix.toImage().convertToFormat(QImage.Format_ARGB32)
+        区 = _不透明包围盒(图)
+        if 区.isEmpty() or 区 == 图.rect():
+            return 图标  # 全透明或本就无留白，原样返回
+        裁 = 图.copy(区).scaled(边, 边, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        # 画布用 QImage + drawImage：QPainter.drawPixmap 直接收 QImage 会原生崩溃
+        画布 = QImage(边, 边, QImage.Format_ARGB32)
+        画布.fill(Qt.transparent)
+        笔 = QPainter(画布)
+        笔.drawImage((边 - 裁.width()) // 2, (边 - 裁.height()) // 2, 裁)
+        笔.end()
+        return QIcon(QPixmap.fromImage(画布))
+    except Exception:
+        return 图标
+
+
 def 取文件图标(路径):
     try:
         图 = 图标提供者.icon(QFileInfo(路径))
         if not 图.isNull():
-            return 图
+            return _规格化(图)
     except Exception:
         pass
     return QApplication.style().standardIcon(QStyle.SP_FileIcon)
 
 
+图片后缀集 = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico", ".tiff"}
+
+
+def 取图标展示(路径):
+    """图片文件优先显示真实缩略图（等比缩到 48px），其余走系统图标。
+    只对盒子里存放的"原图文件"生效；.lnk 快捷方式不解析目标（省 COM 开销）。"""
+    try:
+        后缀 = os.path.splitext(路径)[1].lower()
+        if 后缀 in 图片后缀集 and os.path.isfile(路径):
+            图 = QPixmap(路径)
+            if not 图.isNull():
+                return QIcon(图.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    except Exception:
+        pass
+    return 取文件图标(路径)
+
+
 # ---------------- 盒内图标按钮 ----------------
 
 class 盒内图标(QToolButton):
-    def __init__(self, 主窗, 卡片, 条目):
+    def __init__(self, 主窗, 卡片, 条目, 所属分类=None):
         super().__init__()
         self.主窗 = 主窗
         self.卡片 = 卡片
         self.条目 = 条目
+        # "全部"总览页里卡片的分类是虚拟分类，打开/移动/恢复/删除
+        # 都必须用条目真正所属的分类，所以每个图标自己记一份
+        self.所属 = 所属分类 or 卡片.分类
         self.setObjectName("盒内图标")
         self.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         self.setIconSize(QSize(36, 36))
@@ -331,27 +572,69 @@ class 盒内图标(QToolButton):
         名称 = 条目["名称"]
         self.setText(名称 if len(名称) <= 8 else 名称[:7] + "…")
         self.setToolTip(名称)
-        self.setIcon(取文件图标(self.绝对路径()))
+        self._详情已建 = False  # 悬停详情卡片懒生成：首次悬停才统计文件信息
+        self.setIcon(取图标展示(self.绝对路径()))
         self.setCursor(Qt.PointingHandCursor)
+        self.setAcceptDrops(True)  # 图标自身也接收拖放：拖到别的图标上 = 排序
         self._按下位置 = None
 
     def 绝对路径(self):
-        return os.path.join(数据目录, self.卡片.分类["名称"], self.条目["文件"])
+        return os.path.join(数据目录, self.所属["名称"], self.条目["文件"])
 
     def _open_item(self):
-        """打开条目（双击或菜单）"""
+        """打开条目（双击或菜单），顺手记一次打开数（常用置顶用）"""
         try:
             os.startfile(self.绝对路径())
+            self.条目["打开次数"] = int(self.条目.get("打开次数", 0)) + 1
+            保存配置()
         except Exception:
             pass
         self.主窗.打开后收起()
 
+    def enterEvent(self, 事件):
+        """鼠标悬停到图标上：播提示音；首次悬停把 tooltip 升级成文件详情卡片"""
+        播放悬停音效()
+        if not self._详情已建:
+            self._详情已建 = True
+            try:
+                self.setToolTip(self._构造详情())
+            except Exception:
+                pass
+        super().enterEvent(事件)
+
+    def _构造详情(self):
+        """悬停详情：名称 / 大小 / 修改时间 / 快捷方式目标 / 原位置。
+        只在第一次悬停时算一次，不拖慢建网格。"""
+        行 = ["<b>%s</b>" % self.条目.get("名称", "")]
+        p = self.绝对路径()
+        if os.path.exists(p):
+            st = os.stat(p)
+            大小 = st.st_size
+            if 大小 > 1048576:
+                大小文 = "%.1f MB" % (大小 / 1048576)
+            elif 大小 > 1024:
+                大小文 = "%.1f KB" % (大小 / 1024)
+            else:
+                大小文 = "%d B" % 大小
+            行.append("大小：%s" % 大小文)
+            行.append("修改时间：" + time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime)))
+            if p.lower().endswith(".lnk"):
+                sc = 取shell().CreateShortcut(p)
+                if sc.TargetPath:
+                    行.append("目标：" + sc.TargetPath)
+        if self.条目.get("原路径"):
+            行.append("原位置：" + self.条目["原路径"])
+        行.append("打开 %d 次" % int(self.条目.get("打开次数", 0)))
+        return "<br>".join(行)
+
     def mouseDoubleClickEvent(self, 事件):
+        播放双击音效()
         self._open_item()
 
     def mousePressEvent(self, 事件):
         if 事件.button() == Qt.LeftButton:
             self._按下位置 = 事件.pos()
+            播放单击音效()
         super().mousePressEvent(事件)
 
     def mouseMoveEvent(self, 事件):
@@ -363,11 +646,29 @@ class 盒内图标(QToolButton):
         拖 = QDrag(self)
         数据 = QMimeData()
         数据.setData(内部拖放格式, json.dumps(
-            {"源": self.卡片.分类["名称"], "文件": self.条目["文件"]},
+            {"源": self.所属["名称"], "文件": self.条目["文件"]},
             ensure_ascii=False).encode("utf-8"))
         拖.setMimeData(数据)
         拖.setPixmap(self.icon().pixmap(32, 32))
         拖.exec_(Qt.MoveAction)
+
+    def dragEnterEvent(self, 事件):
+        """拖进来的若是盒内图标，本图标就成为一个合法的落点"""
+        if 事件.mimeData().hasFormat(内部拖放格式):
+            事件.acceptProposedAction()
+
+    def dropEvent(self, 事件):
+        """落到本图标上：插到本图标前面（子级接收后 Qt 不会再传给页面）"""
+        数据 = 事件.mimeData()
+        if not 数据.hasFormat(内部拖放格式):
+            return
+        try:
+            载荷 = json.loads(bytes(数据.data(内部拖放格式)).decode("utf-8"))
+        except Exception:
+            return
+        事件.acceptProposedAction()
+        self.主窗.移动条目(载荷.get("源", ""), 载荷.get("文件", ""),
+                          self.所属, 目标文件名=self.条目["文件"])
 
     def contextMenuEvent(self, 事件):
         """图标右键菜单：常用 Windows 文件操作都在这里"""
@@ -380,10 +681,11 @@ class 盒内图标(QToolButton):
         菜单.addSeparator()
         if self.条目.get("原路径"):
             菜单.addAction("↩ 恢复到原来的位置",
-                           lambda: self.主窗.恢复条目(self.卡片.分类, self.条目))
+                           lambda: self.主窗.恢复条目(self.所属, self.条目))
         else:
             菜单.addAction("🗑 移除快捷方式",
-                           lambda: self.主窗.恢复条目(self.卡片.分类, self.条目))
+                           lambda: self.主窗.恢复条目(self.所属, self.条目))
+        菜单.addAction("🗑 删除图标（进回收站）", self._delete_to_trash)  # 槽名 ASCII！
         菜单.exec_(事件.globalPos())
 
     def _open_folder(self):
@@ -397,6 +699,42 @@ class 盒内图标(QToolButton):
             subprocess.Popen(["explorer", "/select,", p])
         except Exception:
             os.startfile(os.path.dirname(p))
+
+    def _delete_to_trash(self):
+        """删除图标 = 把盒子里这个文件送进回收站（后悔可去回收站找回），再移除条目。
+        走系统正规删除 SHFileOperationW + FOF_ALLOWUNDO，不是永久抹掉。"""
+        答 = QMessageBox.question(
+            self, "删除图标",
+            "要删除「%s」吗？\n文件会进回收站，后悔了可以去回收站找回。" % self.条目.get("名称", ""))
+        if 答 != QMessageBox.Yes:
+            return
+        p = self.绝对路径()
+        try:
+            if os.path.exists(p):
+                import ctypes.wintypes as wt
+
+                class _文件操作结构(ctypes.Structure):
+                    _fields_ = [("hwnd", wt.HWND), ("wFunc", wt.UINT),
+                                ("pFrom", ctypes.c_wchar_p), ("pTo", ctypes.c_wchar_p),
+                                ("fFlags", ctypes.c_uint16),
+                                ("fAnyOperationsAborted", wt.BOOL),
+                                ("hNameMappings", ctypes.c_void_p),
+                                ("lpszProgressTitle", ctypes.c_wchar_p)]
+
+                op = _文件操作结构()
+                op.hwnd = None
+                op.wFunc = 3                      # FO_DELETE
+                op.pFrom = p + "\0\0"           # 系统要求路径以双空字符结尾
+                op.pTo = None
+                op.fFlags = 0x40 | 0x10 | 0x4     # 进回收站 + 不再系统弹窗 + 静默
+                ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+            分类 = self.所属
+            if self.条目 in 分类["条目"]:
+                分类["条目"].remove(self.条目)
+            保存配置()
+            self.主窗.刷新全部()
+        except Exception as e:
+            QMessageBox.warning(self, "删除失败", str(e))
 
     def _copy_path(self):
         """把文件路径复制到剪贴板"""
@@ -498,6 +836,7 @@ class 分类页(QWidget):
         super().__init__()
         self.主窗 = 主窗
         self.分类 = 分类
+        self.虚拟 = bool(分类.get("虚拟"))  # "全部"总览页：聚合展示，不存文件
         self.setAcceptDrops(True)
 
         # 外层布局：把网格顶在上面（图标从左上角排，排完后下面空着）
@@ -563,11 +902,26 @@ class 分类页(QWidget):
             self.网格.setColumnStretch(col, 0)
         # 整个网格对齐到左上角，别分散填满
         self.网格.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        if self.分类["条目"]:
-            for 序, 条目 in enumerate(self.分类["条目"]):
-                self.网格.addWidget(盒内图标(self.主窗, self, 条目), 序 // 列数, 序 % 列数)
+        # 每项是 (条目, 真正所属分类) 二元组；"全部"总览页聚合所有真实分类
+        if self.虚拟:
+            条目列表 = [(t, c) for c in 配置["分类"] if not c.get("虚拟")
+                        for t in c["条目"]]
         else:
-            提示 = QLabel("把桌面图标拖到这里")
+            条目列表 = [(t, self.分类) for t in self.分类["条目"]]
+        # 常用置顶：按累计打开次数从多到少排（sort 稳定，次数相同保持原顺序）
+        if 配置.get("常用置顶", False):
+            条目列表.sort(key=lambda p: -int(p[0].get("打开次数", 0)))
+        # 搜索过滤：只显示名称里含关键字的图标
+        过滤字 = getattr(self.主窗, "搜索字", "").strip().lower()
+        if 过滤字:
+            条目列表 = [p for p in 条目列表
+                        if 过滤字 in str(p[0].get("名称", "")).lower()]
+        if 条目列表:
+            for 序, (条目, 所属) in enumerate(条目列表):
+                self.网格.addWidget(盒内图标(self.主窗, self, 条目, 所属),
+                                    序 // 列数, 序 % 列数)
+        else:
+            提示 = QLabel("把桌面图标拖到这里" if not 过滤字 else "没有匹配的图标")
             提示.setObjectName("提示文字")
             提示.setAlignment(Qt.AlignCenter)
             提示.setStyleSheet("color: #6a7386; font-size: 9pt;")
@@ -591,7 +945,11 @@ class 分类页(QWidget):
         格子步宽 = 图标按钮宽 + s   # 每列之间的中心距离
         格子步高 = 图标按钮高 + s
 
-        总行数 = max(3, (len(self.分类["条目"]) + 列数 - 1) // 列数)
+        if self.虚拟:
+            条目数 = sum(len(c["条目"]) for c in 配置["分类"] if not c.get("虚拟"))
+        else:
+            条目数 = len(self.分类["条目"])
+        总行数 = max(3, (条目数 + 列数 - 1) // 列数)
 
         # 画竖线：每条线对齐一个图标按钮的中心
         for i in range(列数):
@@ -628,12 +986,35 @@ class 分类页(QWidget):
             except Exception:
                 return
             事件.acceptProposedAction()
-            self.主窗.移动条目(载荷.get("源", ""), 载荷.get("文件", ""), self.分类)
+            目标 = self.分类
+            if self.虚拟:
+                # "全部"是总览不是真分类：落到它空白处 = 挪到该条目自己分类的末尾
+                目标 = next((c for c in 配置["分类"]
+                             if c["名称"] == 载荷.get("源", "")), None)
+                if 目标 is None:
+                    return
+            self.主窗.移动条目(载荷.get("源", ""), 载荷.get("文件", ""), 目标)
         elif 数据.hasUrls():
             路径 = [u.toLocalFile() for u in 数据.urls() if u.isLocalFile()]
             if 路径:
                 事件.acceptProposedAction()
                 self.主窗.拖入(self.分类, 路径)
+
+
+def 前台是全屏():
+    """前台窗口完整盖住了它所在的整个显示器 → 认为是游戏独占全屏/全屏视频/F11 全屏。
+    普通"最大化窗口"不算（它让出了任务栏，面积小于整屏），不影响日常边缘唤出。"""
+    try:
+        hwnd = win32gui.GetForegroundWindow()
+        if not hwnd:
+            return False
+        屏矩形 = win32api.GetMonitorInfo(
+            win32api.MonitorFromWindow(hwnd, win32con.MONITOR_DEFAULTTONEAREST))[0]
+        窗矩形 = win32gui.GetWindowRect(hwnd)
+        return ((窗矩形[2] - 窗矩形[0]) >= (屏矩形[2] - 屏矩形[0]) and
+                (窗矩形[3] - 窗矩形[1]) >= (屏矩形[3] - 屏矩形[1]))
+    except Exception:
+        return False
 
 
 # ---------------- 主窗口 ----------------
@@ -714,17 +1095,43 @@ class 收纳盒窗口(QWidget):
         提示.setWordWrap(True)
         内.addWidget(提示)
 
-        # 分类标签栏 + 页面切换区
+        # 搜索过滤框：打字实时过滤当前所有分类页的图标，Esc 或 ✕ 清空
+        self.搜索字 = ""
+        self.搜索框 = QLineEdit()
+        self.搜索框.setObjectName("搜索框")
+        self.搜索框.setPlaceholderText("搜索图标…")
+        self.搜索框.setClearButtonEnabled(True)
+        self.搜索框.textChanged.connect(self._on_search)  # 槽名 ASCII！
+        内.addWidget(self.搜索框)
+
+        # 分类导航分两区：左边 = 类型分类按钮列（全部/文档/图片…），
+        # 右上 = 用户自己的分类标签栏（常用/魔兽争霸/新建的），右下 = 图标页
+        主体行 = QHBoxLayout()
+        主体行.setContentsMargins(0, 2, 0, 0)
+        主体行.setSpacing(6)
+
+        # 左列：QToolButton 横排文字从上堆到下（竖排 QTabBar 会叠字，已弃用）
+        self.侧栏容器 = QWidget()
+        self.侧栏容器.setObjectName("类型侧栏")
+        侧栏列 = QVBoxLayout(self.侧栏容器)
+        侧栏列.setContentsMargins(0, 0, 0, 0)
+        侧栏列.setSpacing(4)
+        侧栏列.addStretch(1)  # 末尾弹性留白：按钮始终从顶部开始堆
+        self._侧栏按钮 = []   # 刷新全部 时重建
+        主体行.addWidget(self.侧栏容器)
+
+        右列 = QVBoxLayout()
+        右列.setSpacing(4)
+
         标签栏行 = QHBoxLayout()
-        标签栏行.setContentsMargins(0, 2, 0, 0)
+        标签栏行.setContentsMargins(0, 0, 0, 0)
         标签栏行.setSpacing(4)
 
-        # QTabBar：可点的分类标签，标签多时自动出现左右翻页箭头
         self.标签栏 = QTabBar()
         self.标签栏.setObjectName("分类标签栏")
         self.标签栏.setDocumentMode(True)      # 让标签和下方内容无缝衔接
         self.标签栏.setUsesScrollButtons(True)  # 标签多了自动出现左右箭头
-        self.标签栏.setTabsClosable(False)      # 关掉默认的"×"关闭按钮（我们用右键菜单删分类）
+        self.标签栏.setTabsClosable(False)      # 关掉默认的"×"关闭按钮（用右键菜单删分类）
         self.标签栏.setMovable(False)           # 不让用户拖动标签改顺序（简化逻辑）
         self.标签栏.currentChanged.connect(self._on_tab_changed)  # 切换标签时更新页面
         # 标签上右键 → 重命名/删除分类；空白处右键 → 新建分类
@@ -732,7 +1139,7 @@ class 收纳盒窗口(QWidget):
         self.标签栏.setContextMenuPolicy(Qt.CustomContextMenu)
         标签栏行.addWidget(self.标签栏, 1)
 
-        # "+"新建分类按钮，固定在标签栏最右边
+        # "+"新建分类按钮，固定在标签栏最右边（新建的分类都进顶部标签栏）
         self.新建钮 = QToolButton()
         self.新建钮.setObjectName("新建分类")
         self.新建钮.setText("＋")
@@ -740,19 +1147,30 @@ class 收纳盒窗口(QWidget):
         self.新建钮.setToolTip("新建分类")
         self.新建钮.clicked.connect(self._add_category)  # 槽名必须 ASCII！
         标签栏行.addWidget(self.新建钮)
+        右列.addLayout(标签栏行)
 
-        内.addLayout(标签栏行)
-
-        # QStackedWidget：每次只显示一个分类的图标页面，点标签时切换
+        # QStackedWidget：每次只显示一个分类的图标页面，两套导航都能切换它
         self.页面栈 = QStackedWidget()
         self.页面栈.setObjectName("分类页面栈")
-        内.addWidget(self.页面栈, 1)
+        右列.addWidget(self.页面栈, 1)
+
+        主体行.addLayout(右列)
+        内.addLayout(主体行)
 
         # 自动隐藏：定时检查鼠标是否离开窗口
         self._隐藏计时 = QTimer(self)
-        self._隐藏计时.setInterval(300)
+        self._隐藏计时.setInterval(100)  # 100毫秒轮询：边缘唤出约0.3秒触发
         self._隐藏计时.timeout.connect(self._check_autohide)
         self._隐藏计时.start()
+
+        # 屏幕边缘唤出用：连续贴边计数（约 0.3 秒触发），藏在隐藏定时器里顺带检测
+        self._贴边次数 = 0
+        # 用户把窗口拖到屏幕哪条边贴住（上/左/右），边缘唤出就只认那几条边
+        self._停靠边 = set()
+        # 双区分类导航：页面栈索引 = 配置["分类"] 索引，两张映射表换算导航内部序号
+        self._导航同步 = False
+        self._标签映射 = []
+        self._侧栏映射 = []
 
         self.show_request.connect(self.toggle)  # 鼠标钩子线程 → 主线程
         self.刷新全部()
@@ -762,10 +1180,10 @@ class 收纳盒窗口(QWidget):
     # --- 刷新与自动隐藏 ---
 
     def 刷新全部(self):
-        """重建所有标签和对应页面：配置里的分类变了（新建/删/重命名）时调用。
-        策略：先记住当前选中的标签索引，清空标签栏和页面栈，按配置里的分类列表重新建，
-        最后尽量切回原来那个标签（原来的索引可能被删了，就切到相邻的）"""
-        原来的索引 = self.标签栏.currentIndex()
+        """重建两套分类导航 + 页面：左边按钮列 = 类型分类（全部/文档/图片…），
+        顶部标签栏 = 用户自己的分类（常用/魔兽争霸/新建的）。
+        页面栈顺序永远与 配置["分类"] 一致，两套导航用映射表换算索引。"""
+        原来的索引 = self.页面栈.currentIndex()
         # 清空页面栈（旧页面会被 deleteLater 释放）
         while self.页面栈.count():
             w = self.页面栈.widget(0)
@@ -773,26 +1191,76 @@ class 收纳盒窗口(QWidget):
             if w:
                 w.setParent(None)  # 同重建网格：立刻摘掉，防止旧页面残留
                 w.deleteLater()
-        # 清空标签栏
+        # 清空顶部标签栏和左栏按钮
         while self.标签栏.count():
             self.标签栏.removeTab(0)
-        # 按配置里的分类列表逐个建标签 + 对应页面
-        for 分类 in 配置["分类"]:
+        for 钮 in self._侧栏按钮:
+            钮.setParent(None)
+            钮.deleteLater()
+        self._侧栏按钮 = []
+        self._标签映射 = []  # 顶部标签序号 → 分类索引
+        self._侧栏映射 = []  # 左栏按钮序号 → 分类索引
+        for 索引, 分类 in enumerate(配置["分类"]):
             页面 = 分类页(self, 分类)
             self.页面栈.addWidget(页面)
-            # 标签文字：分类名 + 条目计数，让用户一眼看到每个分类装了多少
-            标签文字 = f"{分类['名称']}  ({len(分类['条目'])})"
-            self.标签栏.addTab(标签文字)
-        # 切回原来的索引（夹在有效范围内防越界）
-        总数 = self.标签栏.count()
-        if 总数 > 0:
-            目标 = max(0, min(原来的索引, 总数 - 1))
-            self.标签栏.setCurrentIndex(目标)
-            self.页面栈.setCurrentIndex(目标)
+            # 计数："全部"总览是所有真实分类加起来
+            if 分类.get("虚拟"):
+                数目 = sum(len(c["条目"]) for c in 配置["分类"] if not c.get("虚拟"))
+            else:
+                数目 = len(分类["条目"])
+            if 分类.get("类型"):
+                # 左栏按钮：横排文字，点它切换分类；右键可改名/删除（"全部"除外）
+                钮 = QToolButton()
+                钮.setObjectName("类型侧栏钮")
+                钮.setText(f"{分类['名称']} ({数目})")
+                钮.setCheckable(True)
+                钮.setCursor(Qt.PointingHandCursor)
+                钮.clicked.connect(lambda _=False, i=索引: self._跳转分类(i))  # 槽名 ASCII！
+                if 分类.get("虚拟"):
+                    钮.setToolTip("所有分类的总览，拖文件到这里会自动按类型归类")
+                else:
+                    钮.setToolTip("右键可重命名或删除")
+                    钮.setContextMenuPolicy(Qt.CustomContextMenu)
+                    钮.customContextMenuRequested.connect(
+                        lambda _p, i=索引: self._on_side_menu(i))
+                # 插到末尾 stretch 之前：按钮从顶部开始一个个堆
+                self.侧栏容器.layout().insertWidget(len(self._侧栏按钮), 钮)
+                self._侧栏按钮.append(钮)
+                self._侧栏映射.append(索引)
+            else:
+                self._标签映射.append(索引)
+                self.标签栏.addTab(f"{分类['名称']}  ({数目})")
+        # 尽量停在原来正看着的分类上（原索引可能被删了，就切到相邻的）
+        if self.页面栈.count():
+            self._跳转分类(max(0, min(原来的索引, self.页面栈.count() - 1)))
 
-    def _on_tab_changed(self, 索引):
-        """用户点击标签栏切换分类时，同步切换 StackedWidget 里的页面"""
-        self.页面栈.setCurrentIndex(索引)
+    def _on_tab_changed(self, 标签序):
+        """顶部标签栏切换：标签序 是"栏内序号"，查映射表换成真正的分类索引"""
+        if self._导航同步 or 标签序 < 0 or 标签序 >= len(self._标签映射):
+            return
+        self._跳转分类(self._标签映射[标签序])
+
+    def _跳转分类(self, 索引):
+        """统一的切换分类入口：翻页面 + 同步两套导航的高亮（_导航同步 防信号回环）"""
+        if 索引 < 0 or 索引 >= self.页面栈.count():
+            return
+        self._导航同步 = True
+        try:
+            self.页面栈.setCurrentIndex(索引)
+            标签序 = self._标签映射.index(索引) if 索引 in self._标签映射 else -1
+            if self.标签栏.currentIndex() != 标签序:
+                self.标签栏.setCurrentIndex(标签序)
+            for 序, 钮 in enumerate(self._侧栏按钮):
+                钮.setChecked(索引 == self._侧栏映射[序])
+        finally:
+            self._导航同步 = False
+
+    def _on_side_menu(self, 索引):
+        """左边类型分类按钮的右键菜单：重命名 / 删除（和顶部标签一样）"""
+        菜单 = QMenu(self)
+        菜单.addAction("重命名分类…", lambda: self._重命名分类(索引))
+        菜单.addAction("删除分类…", lambda: self._删除分类(索引))
+        菜单.exec_(QCursor.pos())
 
     def _on_tab_menu(self, 位置):
         """标签栏右键菜单：
@@ -802,10 +1270,12 @@ class 收纳盒窗口(QWidget):
         # tabAt 返回 -1 表示点在空白处，否则是点中的标签索引
         点中的标签索引 = self.标签栏.tabAt(位置)
         菜单 = QMenu(self)
-        if 点中的标签索引 >= 0 and 点中的标签索引 < len(配置["分类"]):
-            # 点在具体标签上 → 管理这个分类
-            菜单.addAction("重命名分类…", lambda: self._重命名分类(点中的标签索引))
-            菜单.addAction("删除分类…", lambda: self._删除分类(点中的标签索引))
+        if 0 <= 点中的标签索引 < len(self._标签映射):
+            # 顶部标签只装用户自己的分类：栏内序号先换算成真正的分类索引
+            # （"全部"等类型分类在左栏，右键保护在它们自己的按钮上）
+            分类索引 = self._标签映射[点中的标签索引]
+            菜单.addAction("重命名分类…", lambda: self._重命名分类(分类索引))
+            菜单.addAction("删除分类…", lambda: self._删除分类(分类索引))
             菜单.addSeparator()
         # 无论点在标签还是空白处，都可以新建
         菜单.addAction("新建分类…", self._add_category)  # 槽名必须 ASCII！
@@ -852,7 +1322,10 @@ class 收纳盒窗口(QWidget):
         self.刷新全部()
 
     def _check_autohide(self):
-        if not self.isVisible() or self._固定:
+        if not self.isVisible():
+            self._检测边缘唤出()
+            return
+        if self._固定:
             return
         # 鼠标还没进入过窗口（例如刚从托盘点开，鼠标还停在托盘上）：先不隐藏
         if not self._鼠标进过窗口:
@@ -864,6 +1337,53 @@ class 收纳盒窗口(QWidget):
         范围 = self.frameGeometry().adjusted(-6, -6, 6, 6)
         if not 范围.contains(QCursor.pos()):
             self.hide()
+
+    def _更新停靠边(self):
+        """用户拖动窗口松手后调用：记录窗口贴住了屏幕哪条边（上/左/右，容差12像素）。
+        边缘唤出只响应贴住的边——没贴任何边就不触发（用户要求：不要哪里都显示）。"""
+        self._停靠边 = set()
+        屏 = QGuiApplication.screenAt(self.frameGeometry().center()) or QGuiApplication.primaryScreen()
+        几何 = 屏.availableGeometry()
+        窗 = self.frameGeometry()
+        if 窗.top() - 几何.top() <= 12:
+            self._停靠边.add("上")
+        if 窗.left() - 几何.left() <= 12:
+            self._停靠边.add("左")
+        if 几何.right() - 窗.right() <= 12:
+            self._停靠边.add("右")
+
+    def _检测边缘唤出(self):
+        """窗口隐藏时鼠标顶住窗口停靠的那条屏幕边 → 约 0.3 秒自动弹出收纳盒。
+        只认用户把窗口拖过去贴住的边（_停靠边）：拖到顶上只认上边，拖到左边只认左边；
+        下边缘永远留给任务栏；
+        多屏时以鼠标所在屏幕的可用区为准；按住鼠标键时不触发（防拖窗口误触）；
+        前台是全屏窗口（游戏/全屏视频）时自动安静，绝不抢焦点。"""
+        if not 配置.get("边缘唤出", True):
+            self._贴边次数 = 0
+            return
+        if QApplication.mouseButtons() != Qt.NoButton:
+            self._贴边次数 = 0
+            return
+        if 前台是全屏():
+            self._贴边次数 = 0
+            return
+        if not self._停靠边:
+            self._贴边次数 = 0
+            return  # 窗口没贴过任何边：边缘唤出不生效，等用户拖一次再说
+        位 = QCursor.pos()
+        屏 = QGuiApplication.screenAt(位) or QGuiApplication.primaryScreen()
+        几何 = 屏.availableGeometry()
+        # 只认停靠的那几条边；下边永远留给任务栏
+        贴边 = (("上" in self._停靠边 and 位.y() <= 几何.top() + 2) or
+                ("左" in self._停靠边 and 位.x() <= 几何.left() + 2) or
+                ("右" in self._停靠边 and 位.x() >= 几何.right() - 2))
+        if 贴边:
+            self._贴边次数 += 1
+            if self._贴边次数 >= 3:  # 轮询间隔100毫秒，3帧≈0.3秒弹出
+                self._贴边次数 = 0
+                self.弹出()
+        else:
+            self._贴边次数 = 0
 
     # --- 显示与固定 ---
 
@@ -894,6 +1414,15 @@ class 收纳盒窗口(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
+
+    def _on_search(self, 文字):
+        """搜索框文字变了：记住关键字，让每个分类页重建网格（重建内部做过滤）"""
+        self.搜索字 = 文字 or ""
+        for i in range(self.页面栈.count()):
+            页 = self.页面栈.widget(i)
+            if isinstance(页, 分类页):
+                页._上次列数 = None
+                页.重建网格()
 
     def _show_settings(self):
         """点标题栏 ⚙️ 按钮打开设置对话框。
@@ -1009,8 +1538,13 @@ class 收纳盒窗口(QWidget):
         return super().nativeEvent(事件类型, 消息)
 
     def keyPressEvent(self, 事件):
-        if 事件.key() == Qt.Key_Escape and not self._固定:
-            self.hide()
+        if 事件.key() == Qt.Key_Escape:
+            # Esc 先清搜索框，其次才收起窗口
+            if getattr(self, "搜索字", ""):
+                self.搜索框.clear()
+                return
+            if not self._固定:
+                self.hide()
         super().keyPressEvent(事件)
 
     def eventFilter(self, 对象, 事件):
@@ -1021,7 +1555,8 @@ class 收纳盒窗口(QWidget):
         - QScrollArea / QStackedWidget（滚动页面）"""
         if 事件.type() == QEvent.MouseButtonPress and 事件.button() == Qt.LeftButton:
             # 交互控件白名单：这些控件上的左键按下不拖窗口
-            if isinstance(对象, (QToolButton, QTabBar, QScrollArea, QStackedWidget, QDialog)):
+            if isinstance(对象, (QToolButton, QTabBar, QScrollArea, QStackedWidget,
+                                QDialog, QLineEdit, QComboBox, QSpinBox)):
                 return super().eventFilter(对象, 事件)
             名称 = 对象.objectName() if hasattr(对象, 'objectName') else ""
             if 名称 == "盒内图标":  # 图标按钮自身有拖拽逻辑
@@ -1033,6 +1568,8 @@ class 收纳盒窗口(QWidget):
             self.move(事件.globalPos() - self._拖动偏移)
             return True
         if 事件.type() == QEvent.MouseButtonRelease:
+            if self._拖动偏移 is not None:
+                self._更新停靠边()  # 只跟用户手动拖窗口走：拖到哪条边就认哪条边
             self._拖动偏移 = None
         return super().eventFilter(对象, 事件)
 
@@ -1051,6 +1588,25 @@ class 收纳盒窗口(QWidget):
             路径 = os.path.normpath(路径)
             if not os.path.exists(路径):
                 continue
+            if 分类.get("虚拟"):
+                # 拖到「全部」总览页 = 默认落点：自动按类型归进对应分类；
+                # 类型对不上分类就进第一个真实分类（一般是"常用"）
+                分类 = next((c for c in 配置["分类"]
+                             if not c.get("虚拟")
+                             and c["名称"] == 取类型分类(路径)),
+                            None) or next((c for c in 配置["分类"]
+                                           if not c.get("虚拟")), 分类)
+                文件夹 = os.path.join(数据目录, 分类["名称"])
+                os.makedirs(文件夹, exist_ok=True)
+            elif 配置.get("自动分类", True):
+                # 按类型自动归类：只往"已经存在的"对应分类里放；
+                # 该类型分类还没建就老老实实进当前拖入的分类，绝不自作主张新建标签
+                命中 = next((c for c in 配置["分类"]
+                             if c["名称"] == 取类型分类(路径)), None)
+                if 命中 is not None and 命中 is not 分类:
+                    分类 = 命中
+                    文件夹 = os.path.join(数据目录, 分类["名称"])
+                    os.makedirs(文件夹, exist_ok=True)
             基名 = 清理名称(os.path.splitext(os.path.basename(路径))[0], "图标")
             try:
                 lnk名 = 唯一lnk名(文件夹, 基名)
@@ -1093,14 +1649,34 @@ class 收纳盒窗口(QWidget):
             保存配置()
             self.刷新全部()
 
-    def 移动条目(self, 源分类名, 文件名, 目标分类):
-        if 源分类名 == 目标分类["名称"]:
-            return
+    def 移动条目(self, 源分类名, 文件名, 目标分类, 目标文件名=None):
+        """把源分类里的条目移到目标分类。
+        目标文件名：落在某个图标上时传它，插到该图标前面（拖拽排序）；
+        不传则挪到分类末尾。同一分类内调用 = 纯排序，不动磁盘文件。"""
         源分类 = next((c for c in 配置["分类"] if c["名称"] == 源分类名), None)
         if 源分类 is None:
             return
         条目 = next((t for t in 源分类["条目"] if t["文件"] == 文件名), None)
         if 条目 is None:
+            return
+        if 源分类名 == 目标分类["名称"]:
+            if 文件名 == 目标文件名:
+                return  # 拖回自己身上，什么都不做
+            列表 = 源分类["条目"]
+            源序 = next((i for i, t in enumerate(列表) if t["文件"] == 文件名), None)
+            目标序 = next((i for i, t in enumerate(列表)
+                           if t["文件"] == 目标文件名), None) if 目标文件名 else None
+            if 目标序 is None:
+                # 落在空白处：挪到本分类最后
+                列表.remove(条目)
+                列表.append(条目)
+            else:
+                # 落在图标上：两个图标互换位置。
+                # （之前用"插到目标前面"，拖到自己紧挨着的邻居时等于原地不动，
+                #  看起来就像"第二次拖失效"；互换则任何一次拖放都必有变化）
+                列表[源序], 列表[目标序] = 列表[目标序], 列表[源序]
+            保存配置()
+            self.刷新全部()
             return
         目标文件夹 = os.path.join(数据目录, 目标分类["名称"])
         os.makedirs(目标文件夹, exist_ok=True)
@@ -1113,7 +1689,12 @@ class 收纳盒窗口(QWidget):
             return
         条目["文件"] = 新名
         源分类["条目"].remove(条目)
-        目标分类["条目"].append(条目)
+        目标序 = next((i for i, t in enumerate(目标分类["条目"])
+                       if t["文件"] == 目标文件名), None) if 目标文件名 else None
+        if 目标序 is None:
+            目标分类["条目"].append(条目)
+        else:
+            目标分类["条目"].insert(目标序, 条目)
         保存配置()
         self.刷新全部()
 
@@ -1173,7 +1754,7 @@ class 设置对话框(QDialog):
 
         # ---------- 第 1 组：窗口大小 ----------
         组1 = QLabel("📐 窗口大小")
-        组1.setStyleSheet("font-weight: 600; color: #eef1f7;")
+        组1.setStyleSheet("font-weight: 600;")
         布局.addWidget(组1)
 
         宽行 = QHBoxLayout()
@@ -1200,7 +1781,7 @@ class 设置对话框(QDialog):
 
         # ---------- 第 2 组：图标间距 ----------
         组2 = QLabel("🔢 图标间距")
-        组2.setStyleSheet("font-weight: 600; color: #eef1f7; margin-top: 8px;")
+        组2.setStyleSheet("font-weight: 600; margin-top: 8px;")
         布局.addWidget(组2)
 
         间距行 = QHBoxLayout()
@@ -1217,7 +1798,7 @@ class 设置对话框(QDialog):
 
         # ---------- 第 3 组：开机自启 ----------
         组3 = QLabel("🚀 开机自启动")
-        组3.setStyleSheet("font-weight: 600; color: #eef1f7; margin-top: 8px;")
+        组3.setStyleSheet("font-weight: 600; margin-top: 8px;")
         布局.addWidget(组3)
 
         self.自启勾选 = QCheckBox("开机时自动启动收纳盒（放在系统托盘）")
@@ -1227,6 +1808,54 @@ class 设置对话框(QDialog):
             "用的是系统注册表 HKCU\\Run 项，不需要管理员权限，随时可以关掉。"
         )
         布局.addWidget(self.自启勾选)
+
+        # ---------- 第 4 组：音效提示 ----------
+        组4 = QLabel("🔔 音效提示")
+        组4.setStyleSheet("font-weight: 600; margin-top: 8px;")
+        布局.addWidget(组4)
+
+        self.音效勾选 = QCheckBox("盒内图标悬停 / 点击时播放声音")
+        self.音效勾选.setChecked(bool(配置.get("音效", True)))
+        self.音效勾选.setToolTip(
+            "鼠标移到图标上会轻响一声，单击一声短音，双击一声重音。\n"
+            "觉得吵就取消勾选，立即生效。"
+        )
+        布局.addWidget(self.音效勾选)
+
+        # ---------- 第 5 组：排序与归类 ----------
+        组5 = QLabel("🗂 排序与归类")
+        组5.setStyleSheet("font-weight: 600; margin-top: 8px;")
+        布局.addWidget(组5)
+
+        self.置顶勾选 = QCheckBox("常用置顶（打开次数多的图标自动排到最前面）")
+        self.置顶勾选.setChecked(bool(配置.get("常用置顶", False)))
+        self.置顶勾选.setToolTip("开着时显示顺序按打开次数排；手动拖拽排序照样能拖，\n但下次刷新时顺序会被使用频率排回去")
+        布局.addWidget(self.置顶勾选)
+
+        self.自动类勾选 = QCheckBox("按类型自动归类（拖入文件时自动分进对应分类）")
+        self.自动类勾选.setChecked(bool(配置.get("自动分类", True)))
+        self.自动类勾选.setToolTip("拖入文件时：如果你已经建了 文档/图片/视频/音乐/程序/压缩包/其他 这些分类，\n会按后缀自动分进对应分类；没建就不动（不会自己冒出新分类标签）\n不想被自动分就取消勾选")
+        布局.addWidget(self.自动类勾选)
+
+        # ---------- 第 6 组：外观与唤出 ----------
+        组6 = QLabel("🎨 外观与唤出")
+        组6.setStyleSheet("font-weight: 600; margin-top: 8px;")
+        布局.addWidget(组6)
+
+        主题行 = QHBoxLayout()
+        主题行.addWidget(QLabel("配色主题："))
+        self.主题选择 = QComboBox()
+        self.主题选择.addItems(list(主题配色.keys()))
+        self.主题选择.setCurrentText(str(配置.get("主题", "深色")))
+        self.主题选择.setToolTip("五套配色：深色 / 浅色 / 玻璃 / 青墨 / 暖沙，切换立即生效")
+        主题行.addWidget(self.主题选择)
+        主题行.addStretch()
+        布局.addLayout(主题行)
+
+        self.边缘勾选 = QCheckBox("鼠标顶住窗口停靠的屏幕边约 0.3 秒，自动唤出收纳盒")
+        self.边缘勾选.setToolTip("把窗口拖到屏幕上/左/右边贴住，唤出就只响应那一条边；\n没贴边则不触发，下边缘永远留给任务栏；\n游戏或全屏应用在前台时自动安静，不抢焦点。")
+        self.边缘勾选.setChecked(bool(配置.get("边缘唤出", True)))
+        布局.addWidget(self.边缘勾选)
 
         # ---------- 按钮行 ----------
         布局.addStretch(1)
@@ -1257,6 +1886,21 @@ class 设置对话框(QDialog):
         配置["图标间距"] = int(self.间距输入.value())
         self.主窗.刷新全部()
 
+        # 音效开关（全局配置即时生效，不用重启）
+        配置["音效"] = self.音效勾选.isChecked()
+
+        # 排序 / 归类 / 边缘唤出（都是配置项，即时生效）
+        配置["常用置顶"] = self.置顶勾选.isChecked()
+        配置["自动分类"] = self.自动类勾选.isChecked()
+        配置["边缘唤出"] = self.边缘勾选.isChecked()
+
+        # 换肤：主题变了就整体重发样式表，立即生效
+        新主题 = self.主题选择.currentText()
+        if 新主题 != 配置.get("主题", "深色"):
+            配置["主题"] = 新主题
+            QApplication.instance().setStyleSheet(取样式表())
+        self.主窗.刷新全部()  # 置顶顺序等变化立即反映到网格
+
         # 开机自启（写注册表）
         自启 = self.自启勾选.isChecked()
         配置["开机自启"] = 自启
@@ -1281,6 +1925,13 @@ class 设置对话框(QDialog):
         self.间距输入.setValue(默认图标间距)
         # 开机自启默认不开
         self.自启勾选.setChecked(False)
+        # 音效提示默认开
+        self.音效勾选.setChecked(True)
+        # 排序归类/外观默认：不置顶、自动分类开、边缘唤出开、深色主题
+        self.置顶勾选.setChecked(False)
+        self.自动类勾选.setChecked(True)
+        self.边缘勾选.setChecked(True)
+        self.主题选择.setCurrentText("深色")
         self._apply_all()
 
 
@@ -1305,6 +1956,9 @@ class 系统托盘(QSystemTrayIcon):
         动作赞助 = QAction("☕ 赞助开发…", 菜单)
         动作赞助.triggered.connect(self.show_support)  # 槽名 ASCII！
         菜单.addAction(动作赞助)
+        动作关于 = QAction("ℹ️ 关于此插件…", 菜单)
+        动作关于.triggered.connect(self.show_about)  # 槽名 ASCII！
+        菜单.addAction(动作关于)
         菜单.addSeparator()
         菜单.addAction(动作退出)
         self.setContextMenu(菜单)
@@ -1322,6 +1976,25 @@ class 系统托盘(QSystemTrayIcon):
             self.主窗.弹出()
         # 直接调主窗自己的设置对话框方法，不用在这里搞一套
         self.主窗._show_settings()
+
+    def show_about(self):
+        """托盘菜单点"关于此插件…"：弹版本信息 + 开发者 + 功能列表 + 感谢话术。
+        注意：about 的第一个参数必须是 QWidget 或 None——之前传托盘对象
+        （QSystemTrayIcon 不是窗口）导致点击后静默失败什么都不弹。"""
+        QMessageBox.about(None, "关于 桌面收纳盒",
+            f"<b>桌面收纳盒</b><br>版本：{版本}<br>"
+            "开发者：Lexinm-Code（GitHub）<br>"
+            "联系邮箱：326495489@qq.com"
+            "<hr>"
+            "· 双击桌面空白处 / 托盘图标 / 全局热键唤出，鼠标移开自动隐藏<br>"
+            "· 上方标签自定义分类，左侧类型分类（文档/图片/视频…），拖入自动归类<br>"
+            "· 「全部」页总览所有图标；支持拖拽排序、右键打开位置 / 删除（进回收站）<br>"
+            "· 边缘唤出：你把窗口贴到哪条屏幕边，就只认哪条边；游戏全屏时自动安静<br>"
+            "· 搜索过滤、常用置顶、图片缩略图、悬停详情<br>"
+            "· 五套皮肤、音效提示、图钉固定、开机自启"
+            "<hr>"
+            "感谢你选择桌面收纳盒，愿它让你的桌面从此整洁有序、图标随手可寻。<br>"
+            "如有任何建议，欢迎给我发邮件，或到 GitHub 上给我留言，让它变得更好。")
 
     def show_support(self):
         """托盘菜单点"赞助开发…"：弹一个对话框展示微信/支付宝收款码图片。
@@ -1447,83 +2120,172 @@ class 赞助对话框(QDialog):
 
 # ---------------- 样式 ----------------
 
-样式表 = """
+# ---------------- 样式（三套主题换肤） ----------------
+# 样式表写成"模板 + 配色变量"：@@颜色名@@ 占位，取样式表() 按 配置["主题"] 替换。
+# 设置对话框里换主题 -> QApplication 重新 setStyleSheet 立即整体换肤。
+
+主题配色 = {
+    "深色": {
+        "根背景": "rgba(30,32,40,244)", "根边框": "rgba(255,255,255,30)",
+        "标题文字": "#eef1f7", "提示文字": "#8d97ab", "弱文字": "#9aa4b8",
+        "按钮文字": "#c9d0dd", "按钮背景": "rgba(255,255,255,22)", "按钮悬停": "rgba(255,255,255,40)",
+        "强调色": "#4f8cff", "强调底": "rgba(79,140,255,70)", "强调微底": "rgba(79,140,255,30)",
+        "图标文字": "#e5e9f2", "图标悬停": "rgba(255,255,255,28)",
+        "新建底": "rgba(255,255,255,10)", "新建边框": "rgba(255,255,255,45)",
+        "标签底": "rgba(255,255,255,10)", "标签悬停": "rgba(255,255,255,18)",
+        "栈底": "rgba(255,255,255,8)", "滚动条": "rgba(255,255,255,70)",
+        "弹层底": "#2b2e37", "弹层字": "#e6e9f0", "弹层边框": "rgba(255,255,255,35)",
+        "输入底": "#22242c", "输入边框": "rgba(255,255,255,40)",
+        "对话框按钮": "#3a3f4c", "分隔线": "rgba(255,255,255,28)", "反白": "#ffffff",
+    },
+    "浅色": {
+        "根背景": "rgba(244,246,251,244)", "根边框": "rgba(0,0,0,30)",
+        "标题文字": "#1f2430", "提示文字": "#6a7386", "弱文字": "#5a6275",
+        "按钮文字": "#3a4152", "按钮背景": "rgba(0,0,0,14)", "按钮悬停": "rgba(0,0,0,28)",
+        "强调色": "#2f6fe4", "强调底": "rgba(47,111,228,45)", "强调微底": "rgba(47,111,228,20)",
+        "图标文字": "#262b36", "图标悬停": "rgba(0,0,0,20)",
+        "新建底": "rgba(0,0,0,6)", "新建边框": "rgba(0,0,0,40)",
+        "标签底": "rgba(0,0,0,8)", "标签悬停": "rgba(0,0,0,16)",
+        "栈底": "rgba(0,0,0,6)", "滚动条": "rgba(0,0,0,45)",
+        "弹层底": "#f2f5fa", "弹层字": "#232837", "弹层边框": "rgba(0,0,0,30)",
+        "输入底": "#ffffff", "输入边框": "rgba(0,0,0,30)",
+        "对话框按钮": "#dde3ee", "分隔线": "rgba(0,0,0,20)", "反白": "#ffffff",
+    },
+    "玻璃": {
+        "根背景": "rgba(24,28,40,150)", "根边框": "rgba(255,255,255,70)",
+        "标题文字": "#f4f7ff", "提示文字": "#c2cbdc", "弱文字": "#c8d2e4",
+        "按钮文字": "#e2e8f4", "按钮背景": "rgba(255,255,255,34)", "按钮悬停": "rgba(255,255,255,58)",
+        "强调色": "#57a0ff", "强调底": "rgba(87,160,255,80)", "强调微底": "rgba(87,160,255,40)",
+        "图标文字": "#eef2fa", "图标悬停": "rgba(255,255,255,40)",
+        "新建底": "rgba(255,255,255,16)", "新建边框": "rgba(255,255,255,70)",
+        "标签底": "rgba(255,255,255,16)", "标签悬停": "rgba(255,255,255,28)",
+        "栈底": "rgba(255,255,255,14)", "滚动条": "rgba(255,255,255,90)",
+        "弹层底": "#262b38", "弹层字": "#eef2fa", "弹层边框": "rgba(255,255,255,50)",
+        "输入底": "rgba(255,255,255,30)", "输入边框": "rgba(255,255,255,60)",
+        "对话框按钮": "#3b4150", "分隔线": "rgba(255,255,255,40)", "反白": "#ffffff",
+    },
+    "青墨": {
+        "根背景": "rgba(20,38,36,242)", "根边框": "rgba(120,220,200,40)",
+        "标题文字": "#e6f7f1", "提示文字": "#8fb4ab", "弱文字": "#9fc3b8",
+        "按钮文字": "#cfe8e0", "按钮背景": "rgba(140,230,210,24)", "按钮悬停": "rgba(140,230,210,44)",
+        "强调色": "#2fbf9f", "强调底": "rgba(47,191,159,80)", "强调微底": "rgba(47,191,159,36)",
+        "图标文字": "#e8f5ef", "图标悬停": "rgba(140,230,210,30)",
+        "新建底": "rgba(140,230,210,12)", "新建边框": "rgba(140,230,210,45)",
+        "标签底": "rgba(140,230,210,12)", "标签悬停": "rgba(140,230,210,22)",
+        "栈底": "rgba(140,230,210,10)", "滚动条": "rgba(160,240,220,70)",
+        "弹层底": "#1d3532", "弹层字": "#e6f2ee", "弹层边框": "rgba(140,230,210,40)",
+        "输入底": "#162926", "输入边框": "rgba(140,230,210,45)",
+        "对话框按钮": "#2c4a45", "分隔线": "rgba(140,230,210,28)", "反白": "#ffffff",
+    },
+    "暖沙": {
+        "根背景": "rgba(250,243,232,244)", "根边框": "rgba(160,120,60,40)",
+        "标题文字": "#3d2f1e", "提示文字": "#94806a", "弱文字": "#8a7458",
+        "按钮文字": "#5a4630", "按钮背景": "rgba(150,110,60,16)", "按钮悬停": "rgba(150,110,60,32)",
+        "强调色": "#c47b2c", "强调底": "rgba(196,123,44,45)", "强调微底": "rgba(196,123,44,22)",
+        "图标文字": "#40332a", "图标悬停": "rgba(150,110,60,22)",
+        "新建底": "rgba(150,110,60,10)", "新建边框": "rgba(150,110,60,40)",
+        "标签底": "rgba(150,110,60,10)", "标签悬停": "rgba(150,110,60,20)",
+        "栈底": "rgba(150,110,60,8)", "滚动条": "rgba(150,110,60,50)",
+        "弹层底": "#faf3e8", "弹层字": "#3d2f1e", "弹层边框": "rgba(150,110,60,40)",
+        "输入底": "#ffffff", "输入边框": "rgba(150,110,60,45)",
+        "对话框按钮": "#eadfce", "分隔线": "rgba(150,110,60,26)", "反白": "#ffffff",
+    },
+}
+
+样式表模板 = """
 QWidget { font-family: "Microsoft YaHei UI"; }
-#根窗口 { background: rgba(30,32,40,244); border: 1px solid rgba(255,255,255,30); border-radius: 14px; }
-#标题文字 { color: #eef1f7; font-size: 11pt; font-weight: 600; background: transparent; }
-#提示文字 { color: #8d97ab; font-size: 8pt; background: transparent; }
+#根窗口 { background: @@根背景@@; border: 1px solid @@根边框@@; border-radius: 14px; }
+#标题文字 { color: @@标题文字@@; font-size: 11pt; font-weight: 600; background: transparent; }
+#提示文字 { color: @@提示文字@@; font-size: 8pt; background: transparent; }
 QToolButton#固定钮, QToolButton#关闭钮 {
-    color: #c9d0dd; background: rgba(255,255,255,22); border: none;
+    color: @@按钮文字@@; background: @@按钮背景@@; border: none;
     border-radius: 6px; padding: 3px 8px; font-size: 9pt;
 }
-QToolButton#固定钮:hover, QToolButton#关闭钮:hover { background: rgba(255,255,255,40); }
-QToolButton#固定钮:checked { background: #4f8cff; color: #ffffff; }
-/* 赞助按钮：低调灰色，悬停才变彩色（方案 C）*/
+QToolButton#固定钮:hover, QToolButton#关闭钮:hover { background: @@按钮悬停@@; }
+QToolButton#固定钮:checked { background: @@强调色@@; color: @@反白@@; }
+/* 赞助按钮：低调，悬停变彩色 */
 QToolButton#赞助钮 {
-    color: #5a6275;  /* 深灰，非常低调 */
-    background: transparent;
-    border: none;
-    border-radius: 6px;
-    padding: 2px 4px;
-    font-size: 10pt;
+    color: @@提示文字@@; background: transparent; border: none;
+    border-radius: 6px; padding: 2px 4px; font-size: 10pt;
 }
-QToolButton#赞助钮:hover {
-    color: #ff7a8a;  /* 悬停变粉红色 */
-    background: rgba(255,255,255,25);
-}
+QToolButton#赞助钮:hover { color: #ff7a8a; background: @@按钮背景@@; }
 QToolButton#盒内图标 {
     background: transparent; border: none; border-radius: 8px;
-    color: #e5e9f2; font-size: 8pt; padding: 3px 1px;
+    color: @@图标文字@@; font-size: 8pt; padding: 3px 1px;
 }
-QToolButton#盒内图标:hover { background: rgba(255,255,255,28); }
+QToolButton#盒内图标:hover { background: @@图标悬停@@; }
 /* "+" 新建分类按钮 */
 QToolButton#新建分类 {
-    color: #9aa4b8; background: rgba(255,255,255,10);
-    border: 1px dashed rgba(255,255,255,45); border-radius: 8px;
-    font-size: 14pt; padding: 2px 10px; min-width: 28px; max-width: 36px;
+    color: @@弱文字@@; background: @@新建底@@; border: 1px dashed @@新建边框@@;
+    border-radius: 8px; font-size: 14pt; padding: 2px 10px; min-width: 28px; max-width: 36px;
 }
-QToolButton#新建分类:hover { color: #ffffff; border-color: #4f8cff; background: rgba(79,140,255,30); }
-/* 分类标签栏（QTabBar） */
+QToolButton#新建分类:hover { color: @@反白@@; border-color: @@强调色@@; background: @@强调微底@@; }
+/* 分类标签栏 */
 QTabBar#分类标签栏 { background: transparent; }
 QTabBar#分类标签栏::tab {
-    color: #9aa4b8; background: rgba(255,255,255,10);
-    border: none; border-top-left-radius: 8px; border-top-right-radius: 8px;
+    color: @@弱文字@@; background: @@标签底@@; border: none;
+    border-top-left-radius: 8px; border-top-right-radius: 8px;
     padding: 5px 12px; margin-right: 4px; font-size: 9pt;
 }
-QTabBar#分类标签栏::tab:hover { color: #eef1f7; background: rgba(255,255,255,18); }
+QTabBar#分类标签栏::tab:hover { color: @@标题文字@@; background: @@标签悬停@@; }
 QTabBar#分类标签栏::tab:selected {
-    color: #ffffff; background: rgba(79,140,255,70);
-    border-bottom: 2px solid #4f8cff;
+    color: @@反白@@; background: @@强调底@@; border-bottom: 2px solid @@强调色@@;
 }
-/* 标签栏左右翻页箭头（标签多时出现） */
 QTabBar#分类标签栏::scroller { background: transparent; border: none; }
 QTabBar#分类标签栏::left-arrow, QTabBar#分类标签栏::right-arrow {
-    width: 16px; height: 16px; background: rgba(255,255,255,20); border-radius: 4px;
+    width: 16px; height: 16px; background: @@按钮背景@@; border-radius: 4px;
 }
-/* 分类页面栈容器 */
-QStackedWidget#分类页面栈 { background: rgba(255,255,255,8); border-radius: 10px; }
+QWidget#类型侧栏 { background: transparent; }
+QToolButton#类型侧栏钮 {
+    color: @@弱文字@@; background: @@标签底@@; border: none;
+    border-radius: 8px; padding: 5px 10px; font-size: 9pt;
+}
+QToolButton#类型侧栏钮:hover { color: @@标题文字@@; background: @@标签悬停@@; }
+QToolButton#类型侧栏钮:checked {
+    color: @@反白@@; background: @@强调底@@; border-left: 2px solid @@强调色@@;
+}
+QStackedWidget#分类页面栈 { background: @@栈底@@; border-radius: 10px; }
 QScrollArea { border: none; background: transparent; }
 QScrollArea > QWidget > QWidget { background: transparent; }
 QScrollBar:vertical { background: transparent; width: 6px; margin: 2px 1px; }
-QScrollBar::handle:vertical { background: rgba(255,255,255,70); border-radius: 3px; min-height: 30px; }
+QScrollBar::handle:vertical { background: @@滚动条@@; border-radius: 3px; min-height: 30px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; border: none; height: 0; width: 0; }
-QMenu { background: #2b2e37; color: #e6e9f0; border: 1px solid rgba(255,255,255,35); border-radius: 8px; padding: 4px; }
-QMenu::item { padding: 6px 20px; border-radius: 6px; }
-QMenu::item:selected { background: #4f8cff; }
-QMenu::separator { height: 1px; background: rgba(255,255,255,28); margin: 4px 8px; }
-QMessageBox, QInputDialog, QDialog { background: #2b2e37; color: #e6e9f0; }
-QMessageBox QLabel, QInputDialog QLabel, QDialog QLabel { color: #e6e9f0; background: transparent; }
-QMessageBox QPushButton, QInputDialog QPushButton, QDialog QPushButton {
-    background: #3a3f4c; color: #e6e9f0; border: none; border-radius: 6px; padding: 5px 16px;
+/* 搜索框 */
+QLineEdit#搜索框 {
+    background: @@输入底@@; color: @@图标文字@@; border: 1px solid @@输入边框@@;
+    border-radius: 8px; padding: 4px 8px; font-size: 9pt;
 }
-QMessageBox QPushButton:hover, QInputDialog QPushButton:hover, QDialog QPushButton:hover { background: #4f8cff; }
-QKeySequenceEdit { background: #22242c; color: #e6e9f0; border: 1px solid rgba(255,255,255,40); border-radius: 6px; padding: 4px; }
-QSpinBox { background: #22242c; color: #e6e9f0; border: 1px solid rgba(255,255,255,40); border-radius: 6px; padding: 3px 6px; }
-QSpinBox::up-button, QSpinBox::down-button { width: 18px; background: #3a3f4c; border: none; }
-QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #4f8cff; }
-QInputDialog QLineEdit { background: #22242c; color: #e6e9f0; border: 1px solid rgba(255,255,255,40); border-radius: 6px; padding: 4px; }
+QLineEdit#搜索框:focus { border-color: @@强调色@@; }
+QMenu { background: @@弹层底@@; color: @@弹层字@@; border: 1px solid @@弹层边框@@; border-radius: 8px; padding: 4px; }
+QMenu::item { padding: 6px 20px; border-radius: 6px; }
+QMenu::item:selected { background: @@强调色@@; color: @@反白@@; }
+QMenu::separator { height: 1px; background: @@分隔线@@; margin: 4px 8px; }
+QMessageBox, QInputDialog, QDialog { background: @@弹层底@@; color: @@弹层字@@; }
+QMessageBox QLabel, QInputDialog QLabel, QDialog QLabel { color: @@弹层字@@; background: transparent; }
+QMessageBox QPushButton, QInputDialog QPushButton, QDialog QPushButton, QMessageBox QCheckBox, QDialog QCheckBox {
+    background: @@对话框按钮@@; color: @@弹层字@@; border: none; border-radius: 6px; padding: 5px 16px;
+}
+QMessageBox QPushButton:hover, QInputDialog QPushButton:hover, QDialog QPushButton:hover { background: @@强调色@@; }
+QCheckBox { color: @@弹层字@@; background: transparent; spacing: 6px; }
+QKeySequenceEdit { background: @@输入底@@; color: @@弹层字@@; border: 1px solid @@输入边框@@; border-radius: 6px; padding: 4px; }
+QSpinBox { background: @@输入底@@; color: @@弹层字@@; border: 1px solid @@输入边框@@; border-radius: 6px; padding: 3px 6px; }
+QSpinBox::up-button, QSpinBox::down-button { width: 18px; background: @@对话框按钮@@; border: none; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: @@强调色@@; }
+QComboBox { background: @@输入底@@; color: @@弹层字@@; border: 1px solid @@输入边框@@; border-radius: 6px; padding: 4px 8px; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView { background: @@弹层底@@; color: @@弹层字@@; selection-background-color: @@强调色@@; border: 1px solid @@弹层边框@@; }
+QInputDialog QLineEdit { background: @@输入底@@; color: @@弹层字@@; border: 1px solid @@输入边框@@; border-radius: 6px; padding: 4px; }
 """
+
+
+def 取样式表():
+    """按配置里的主题名生成最终样式表；主题名不认识就回落深色"""
+    配色 = 主题配色.get(配置.get("主题", "深色"), 主题配色["深色"])
+    样式 = 样式表模板
+    for 键, 值 in 配色.items():
+        样式 = 样式.replace("@@" + 键 + "@@", 值)
+    return 样式
 
 
 # ---------------- 入口 ----------------
@@ -1544,7 +2306,7 @@ def main():
     写启动日志("Qt 主程序对象创建完成")
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(生成程序图标())
-    app.setStyleSheet(样式表)
+    app.setStyleSheet(取样式表())
 
     # 防止重复启动
     单实例 = QSharedMemory("桌面收纳盒-单实例")
@@ -1557,6 +2319,12 @@ def main():
 
     首次 = not os.path.exists(配置文件)
     加载配置()
+
+    # 开机自启项自修复：注册表里存在自启项时，每次启动都按当前真实路径重写一遍。
+    # 1) 旧版命令是 "cmd.exe /c start bat"，开机必闪黑窗口——在这里顺手洗掉；
+    # 2) 开发版/exe 版切换、程序目录搬家后，旧 Run 值会指向错误位置，同样被纠正。
+    if 查开机自启():
+        设开机自启(True)
 
     主窗 = 收纳盒窗口()
     托盘 = 系统托盘(主窗)
