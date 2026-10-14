@@ -91,6 +91,7 @@ python 收纳盒.py   # 或双击 启动收纳盒.bat（后台静默运行）
 |---|---|
 | PyQt5 槽名必须 ASCII | `connect` 的方法名不能含中文 |
 | bat 必须 GBK + CRLF | PowerShell `[IO.File]::WriteAllText(路径, ($行 -join "\`r\`n"), [Text.Encoding]::GetEncoding(936))` |
+| 别人下载源码后 bat 变成 LF | 仓库里有 `.gitattributes`：`*.bat -text eol=crlf` 让 bat 以 CRLF 原样进仓库和源码压缩包，不被 git 的行尾自动转换改掉 |
 | deleteLater 不立即删 | `w.setParent(None)` 再 `deleteLater()`，否则旧按钮叠在新按钮上 |
 | PyInstaller 打包后路径 | `sys.frozen=True` 时用 `sys.executable` 的父目录（不是 `__file__`） |
 | `QIcon` 不接受 `QImage` | 本机 PyQt5 5.15.11 里 `QIcon(QImage)` 直接 TypeError，必须先 `QPixmap.fromImage(img)` 中转 |

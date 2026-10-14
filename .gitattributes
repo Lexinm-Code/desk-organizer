@@ -1,0 +1,14 @@
+# 下载源码的人不一定开 core.autocrlf，bat 必须是 GBK + CRLF 才能被 cmd 正确解析
+*.bat  -text
+*.bat  eol=crlf
+
+# Python / Markdown 统一 LF，跨平台看 diff 干净
+*.py   text eol=lf
+*.md   text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# 图片、音频、二进制
+*.png  binary
+*.ico  binary
+*.wav  binary
