@@ -59,8 +59,8 @@ open(_启动日志路径, "w", encoding="utf-8").close()
 from PyQt5.QtCore import (Qt, QRect, QSize, QTimer, QEvent, pyqtSignal, QMimeData,
                           QFileInfo, QSharedMemory, QAbstractNativeEventFilter)
 写启动日志("PyQt5.QtCore 加载完成")
-from PyQt5.QtGui import (QColor, QCursor, QFont, QIcon, QImage, QKeySequence,
-                         QDrag, QPainter, QPixmap, QGuiApplication)
+from PyQt5.QtGui import (QColor, QCursor, QFont, QIcon, QImage, QImageReader,
+                         QKeySequence, QDrag, QPainter, QPixmap, QGuiApplication)
 from PyQt5.QtWidgets import (QApplication, QAction, QCheckBox, QDialog, QFrame,
                              QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMenu,
                              QMessageBox, QPushButton, QKeySequenceEdit, QScrollArea,
@@ -90,7 +90,7 @@ if getattr(sys, 'frozen', False):
 else:
     程序目录 = os.path.dirname(os.path.abspath(__file__))  # 开发时：源码所在目录
 数据目录 = os.path.join(程序目录, "收纳盒数据")
-版本 = "1.0.1"  # 托盘"关于"对话框显示用
+版本 = "1.0.3"  # 托盘"关于"对话框显示用（1.0.3：图片按需小尺寸解码 + 图标缓存 + 系统图标取够用档）
 配置文件 = os.path.join(数据目录, "配置.json")
 内部拖放格式 = "application/x-shouna-tiaomu"
 非法文件字符 = re.compile(r'[\\/:*?"<>|]')
@@ -289,6 +289,19 @@ def 保存配置():
 # 播放——不卡界面、不依赖磁盘文件、不跟随系统声音方案，音量大小由合成参数控制。
 # 设置里关掉"音效提示"后（配置["音效"]=False）全部静音。
 _悬停音效时刻 = [0.0]  # 悬停限流：鼠标快速划过一串图标时不要"哒哒哒"连响
+_悬停静音截止 = [0.0]  # 幻影悬停静音到期时刻：此刻之前的悬停音一律不播
+_幻影悬停静音秒 = 0.45  # 弹出盒子 / 重建网格后的静音窗口长度（秒）
+
+
+def _静音悬停音(秒=None):
+    """弹出盒子、重建图标网格之后掐一小段悬停音，专治"手没动却叮一声"。
+
+    盒子是贴着鼠标弹出的（弹出() 把窗口中心挪到指针位置），图标等于凭空出现在指针底下，
+    Qt 会给这个新出现的控件补发一次 enterEvent —— 那不是用户去悬停，是幻影。
+    重建网格() 整片换新控件同理。真人把鼠标移到某个图标上，必然发生在这 0.45 秒之后，
+    所以真悬停照样有声音，只是不再被系统自己冒出来的那一下骗响。
+    """
+    _悬停静音截止[0] = time.perf_counter() + (_幻影悬停静音秒 if 秒 is None else 秒)
 
 
 def _合成wav(频率, 时长毫秒, 音量=0.18):
@@ -360,6 +373,8 @@ def _播放音效(名称):
 def 播放悬停音效():
     """鼠标移到图标上：轻柔“叮”，0.18 秒内不重复"""
     此刻 = time.perf_counter()
+    if 此刻 < _悬停静音截止[0]:
+        return  # 幻影悬停：刚弹出/刚重建，指针没动也不该响
     if 此刻 - _悬停音效时刻[0] < 0.18:
         return
     _悬停音效时刻[0] = 此刻
@@ -505,7 +520,14 @@ def _规格化(图标, 边=36):
         名列表 = 图标.availableSizes()
         if not 名列表:
             return 图标
-        最大 = max(名列表, key=lambda s: s.width() * s.height())
+        # 显示只有 边x边（36），取"够用的最大档"就够了：以前直接拿 256x256 那张，
+        # 中间位图和 逐像素扫留白（6.5 万点）都白贵一个量级。没有 ≤64 的档位时退回最大档，
+        # 保证任何图标都取得到图。
+        够用 = [s for s in 名列表 if s.width() <= 64 and s.height() <= 64]
+        if 够用:
+            最大 = max(够用, key=lambda s: s.width() * s.height())
+        else:
+            最大 = max(名列表, key=lambda s: s.width() * s.height())
         pix = 图标.pixmap(最大)
         if pix.isNull():
             return 图标
@@ -540,18 +562,68 @@ def 取文件图标(路径):
 图片后缀集 = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico", ".tiff"}
 
 
+_缩略图解码上限 = 192  # 只要 48 像素的显示效果，192 是 4 倍超采样，肉眼与全图解码无差别
+
+
+def _小尺寸解码(路径):
+    """按显示需要的小尺寸解码图片，别把整张原图搬进内存。
+
+    原先 QPixmap(路径) 会把 1024x768 这类原图整个解出来（一张约 3MB）只为缩成 48 像素；
+    这里先问解码器要 192 以内的尺寸 —— JPEG 会走它内置的 1/2、1/4、1/8 降采样，
+    PNG 至少能少分配一大块位图。尺寸不到上限的原图则按原样解码，行为不变。
+    """
+    读 = QImageReader(路径)
+    尺寸 = 读.size()
+    try:
+        if 尺寸.isValid() and max(尺寸.width(), 尺寸.height()) > _缩略图解码上限:
+            比 = _缩略图解码上限 / float(max(尺寸.width(), 尺寸.height()))
+            读.setScaledSize(QSize(max(1, int(尺寸.width() * 比)),
+                                   max(1, int(尺寸.height() * 比))))
+    except Exception:
+        pass  # 万一 setScaledSize 不配合，退回原尺寸解码，绝不能因此取不到图
+    return 读.read()
+
+
+_图标缓存 = {}        # (路径, mtime, 大小) -> 算好的 QIcon
+_图标缓存上限 = 1200  # 超过就整张清空重来，防止用久了无限涨
+
+
+def _缓存键(路径):
+    """路径 + 文件指纹当键：文件被换掉、改名、移走都会自动当没缓存，不会显示旧图标"""
+    try:
+        信 = os.stat(路径)
+        return (路径, int(信.st_mtime), 信.st_size)
+    except OSError:
+        return None
+
+
 def 取图标展示(路径):
     """图片文件优先显示真实缩略图（等比缩到 48px），其余走系统图标。
-    只对盒子里存放的"原图文件"生效；.lnk 快捷方式不解析目标（省 COM 开销）。"""
+    只对盒子里存放的"原图文件"生效；.lnk 快捷方式不解析目标（省 COM 开销）。
+    同一路径算过一次就进缓存：搜索/换列/拖入/改名引起的 重建网格 不再重复解码、
+    不再重复向系统要图标、不再重复逐像素扫留白。"""
+    键 = _缓存键(路径)
+    if 键 is not None:
+        存 = _图标缓存.get(键)
+        if 存 is not None:
+            return 存  # 命中：连系统图标那一趟都不跑了
+    图 = None
     try:
         后缀 = os.path.splitext(路径)[1].lower()
         if 后缀 in 图片后缀集 and os.path.isfile(路径):
-            图 = QPixmap(路径)
-            if not 图.isNull():
-                return QIcon(图.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            小 = _小尺寸解码(路径)
+            if not 小.isNull():
+                缩 = 小.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                图 = QIcon(QPixmap.fromImage(缩))  # 本机 PyQt5 的 QIcon 不吃 QImage，必须先转 QPixmap
     except Exception:
-        pass
-    return 取文件图标(路径)
+        图 = None
+    if 图 is None:
+        图 = 取文件图标(路径)
+    if 键 is not None and 图 is not None:
+        if len(_图标缓存) >= _图标缓存上限:
+            _图标缓存.clear()  # 上限保护：整张清空，下一轮自然重算
+        _图标缓存[键] = 图
+    return 图
 
 
 # ---------------- 盒内图标按钮 ----------------
@@ -577,6 +649,7 @@ class 盒内图标(QToolButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setAcceptDrops(True)  # 图标自身也接收拖放：拖到别的图标上 = 排序
         self._按下位置 = None
+        self._单击音定时 = None  # 延后待放的单击音定时器，确认是双击/拖拽就撤
 
     def 绝对路径(self):
         return os.path.join(数据目录, self.所属["名称"], self.条目["文件"])
@@ -627,14 +700,35 @@ class 盒内图标(QToolButton):
         行.append("打开 %d 次" % int(self.条目.get("打开次数", 0)))
         return "<br>".join(行)
 
+    def _排单击音(self):
+        """把单击音延后 0.16 秒再放：这段时间里确认是双击就撤掉。
+        注意只延后了声音，点击动作本身一点没变慢。"""
+        self._取消单击音()
+        定时 = QTimer(self)
+        定时.setSingleShot(True)
+        定时.timeout.connect(播放单击音效)
+        self._单击音定时 = 定时
+        定时.start(160)
+
+    def _取消单击音(self):
+        """确认这一下是双击或者已经拖起来了：撤掉还没响的那声哒"""
+        定时 = self._单击音定时
+        self._单击音定时 = None
+        if 定时 is not None:
+            定时.stop()
+
     def mouseDoubleClickEvent(self, 事件):
+        self._取消单击音()  # 双击只响一声：撤掉第一次按下延后待放的哒
         播放双击音效()
         self._open_item()
 
     def mousePressEvent(self, 事件):
         if 事件.button() == Qt.LeftButton:
             self._按下位置 = 事件.pos()
-            播放单击音效()
+            # 注意：本机 PyQt5 5.15.11 的 QMouseEvent 没有 clickCount()，一问就抛异常，
+            # 所以不问第几次按下 —— 一律延后 0.16 秒出声。真双击时第二次按下会把这声哒
+            # 重新排上，紧随其后的 mouseDoubleClickEvent 再撤掉，照样只响一声。
+            self._排单击音()
         super().mousePressEvent(事件)
 
     def mouseMoveEvent(self, 事件):
@@ -643,6 +737,7 @@ class 盒内图标(QToolButton):
         if (事件.pos() - self._按下位置).manhattanLength() < 12:
             return
         self._按下位置 = None
+        self._取消单击音()  # 是拖出去排序，不是点一下，撤掉待放的哒
         拖 = QDrag(self)
         数据 = QMimeData()
         数据.setData(内部拖放格式, json.dumps(
@@ -927,6 +1022,7 @@ class 分类页(QWidget):
             提示.setStyleSheet("color: #6a7386; font-size: 9pt;")
             # 空提示横跨整行（占满所有列）
             self.网格.addWidget(提示, 0, 0, 1, 列数)
+        _静音悬停音()  # 整片换新控件 = 幻影 enter 的来源，一并掐掉
         self.update()  # 重建完图标也重绘格子线
 
     def paintEvent(self, 事件):
@@ -1411,6 +1507,7 @@ class 收纳盒窗口(QWidget):
         x = max(几何.left() + 4, min(x, 几何.right() - 宽 - 4))
         y = max(几何.top() + 4, min(y, 几何.bottom() - 高 - 4))
         self.move(x, y)
+        _静音悬停音()  # 盒子贴着鼠标弹出，先掐掉 Qt 补发给指针底下新图标的幻影悬停音
         self.show()
         self.raise_()
         self.activateWindow()
