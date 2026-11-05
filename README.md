@@ -58,7 +58,6 @@ python 收纳盒.py   # 或双击 启动收纳盒.bat（后台静默运行）
 ├── 工具/ffmpeg.exe        视频壁纸解码器（gyan.dev，GPLv3，来源见同目录说明）
 ├── README.md              项目介绍（本文件）
 ├── 更新日志.md             各版本改动
-├── 开发日志.md             踩坑与开发记录
 ├── .gitignore             Git 忽略规则
 ├── wechat.png / alipay.png 收款码（赞助入口用）
 └── 收纳盒数据/            运行时自动生成
