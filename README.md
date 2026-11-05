@@ -88,22 +88,6 @@ python 收纳盒.py   # 或双击 启动收纳盒.bat（后台静默运行）
 - **桌面拖入会真的移动文件**到收纳盒数据目录，不是复制
 - **非桌面来源**（开始菜单、下载文件夹）只建快捷方式，不动原文件
 
-## 🧑‍💻 开发笔记
-
-### 关键技术点（踩过的坑）
-
-| 坑 | 解法 |
-|---|---|
-| PyQt5 槽名必须 ASCII | `connect` 的方法名不能含中文 |
-| bat 必须 GBK + CRLF | PowerShell `[IO.File]::WriteAllText(路径, ($行 -join "\`r\`n"), [Text.Encoding]::GetEncoding(936))` |
-| 别人下载源码后 bat 变成 LF | 仓库里有 `.gitattributes`：`*.bat -text eol=crlf` 让 bat 以 CRLF 原样进仓库和源码压缩包，不被 git 的行尾自动转换改掉 |
-| deleteLater 不立即删 | `w.setParent(None)` 再 `deleteLater()`，否则旧按钮叠在新按钮上 |
-| PyInstaller 打包后路径 | `sys.frozen=True` 时用 `sys.executable` 的父目录（不是 `__file__`） |
-| `QIcon` 不接受 `QImage` | 本机 PyQt5 5.15.11 里 `QIcon(QImage)` 直接 TypeError，必须先 `QPixmap.fromImage(img)` 中转 |
-| pythonw 静默闪退看不到原因 | 顶层把 `sys.excepthook` 指向 `_记录崩溃`，异常写进 `启动日志.txt`（正常启动 5 秒后自删）；写自检脚本时要记得把 excepthook 换回默认，否则报错被吞 |
-| 打包形态选择 | onedir（exe + `_internal/`）比 onefile 启动快近一倍、少一个引导进程：实测 1.41 秒/68.8 MB vs 2.71 秒/78.5 MB |
-| 打包后启动命令 | 打包版注册表直接写 `start "" "桌面收纳盒.exe"`，开发版用 `cmd /c start "" "启动收纳盒.bat"` |
-
 ## ☕ 赞助支持
 
 本软件**永久免费**，但如果它帮到了你，可以请作者喝杯咖啡 ❤️：
