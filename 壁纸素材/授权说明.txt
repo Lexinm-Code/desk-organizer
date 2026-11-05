@@ -1,0 +1,102 @@
+﻿动态壁纸 GIF 素材 授权说明（逐张记录）
+生成时间：2026-11-05
+采集方式：全部为真实从网上 HTTP 下载的原始 GIF 文件，未做任何合成/转码/剪辑。
+====================================================================================================
+
+【统一授权条款】来源均为美国国家航空航天局 NASA 官方素材库（science.nasa.gov / www.nasa.gov）。
+NASA 影像与媒体使用指南（原文引用见下）。要点：
+ 1) 公有领域：NASA 内容在美国“generally are not subject to copyright in the United States”（原则上不受版权保护）。
+ 2) 可商用：指南明确“used in a factual manner that does not imply endorsement may be used without needing explicit permission”，
+    即不暗示 NASA 背书即可使用，无需另行申请许可；本批素材仅作为桌面壁纸展示，不构成背书。
+    注意限制：不得把 NASA 徽标/标志用于商品化，不得用于 NFT、不得暗示 NASA 推荐本产品。
+ 3) 免署名：指南中“NASA should be acknowledged as the source of the material”是建议性表述（should），
+    不是版权法上的署名义务；素材本身无版权标记，因此可商用且免署名。为稳妥起见，建议在程序“关于”页写明“Images courtesy of NASA”。
+ 4) 第三方版权排除：NASA 指南规定带第三方版权的图会标注版权人姓名。本批 6 张已逐条核对 Credit 字段，
+    署名对象全部为 NASA 中心/NASA 雇员/美国政府机构（GSFC、APL、NRL、JPL、USGS、DOE），无一张属于第三方版权。
+    已因此剔除：1ES1927_no_labels.gif（Credit: NSF/AUI/NSF NRAO/Meyer et al. 2025，第三方版权，未采用）。
+
+NASA Images and Media Usage Guidelines (https://www.nasa.gov/multimedia/guidelines/index.html) 原文：
+"NASA content -- images, audio, video, and media files used in the rendition of 3-dimensional models, such as texture maps and polygon data in any format -- generally are not subject to copyright in the United States. You may use this material for educational or informational purposes, including photo collections, textbooks, public exhibits, computer graphical simulations and Internet Web pages. This general permission extends to personal Web pages. News outlets, schools, and text-book authors may use NASA content without needing explicit permission, subject to compliance with these guidelines. NASA content used in a factual manner that does not imply endorsement may be used without needing explicit permission. NASA should be acknowledged as the source of the material. NASA occasionally uses copyright-protected material of third parties with permission on its website. Those images will be marked identified as copyright protected with the name of the copyright holder. NASA's use does not convey any rights to others to use the same material."
+
+====================================================================================================
+
+本地文件名：紫焰漩涡.gif
+原始 URL：https://assets.science.nasa.gov/content/dam/science/cds/svs/a010000/a013000/a013043/SMBH_Infinite_Loop-rev.gif
+素材详情页：https://science.nasa.gov/image-detail/amf-3cc684a1-b558-4d6f-a6ef-1deb00deb694/
+内容描述：超大质量黑洞吸积盘等离子体 360 度旋转模拟动画
+授权条款名：Public Domain（美国公有领域，NASA Media Usage Guidelines）/ 可商用 / 免署名
+授权条款原文：见本文件开头【统一授权条款】引用的 NASA Images and Media Usage Guidelines 段落原文。
+该图署名信息（CMS 元数据原样）：Credit: NASA's Goddard Space Flight Center/Scott Noble; simulation data, d'Ascoli et al. 2018
+文件大小：6090677 字节（5.81 MB）
+文件头：GIF89a    帧数 n_frames：64    尺寸 size：800x460    md5前12位：55dc14190740
+验真结论：合格（要求 头=GIF87a/GIF89a、帧数>=20、横向>=640、1MB<=字节<=8MB）
+----------------------------------------------------------------------------------------------------
+本地文件名：极光夜舞.gif
+原始 URL：https://www.nasa.gov/wp-content/uploads/2026/02/03-aurora.gif
+素材详情页：https://www.nasa.gov/image-detail/03-aurora/
+内容描述：地面拍摄的极光延时动画
+授权条款名：Public Domain（美国公有领域，NASA Media Usage Guidelines）/ 可商用 / 免署名
+授权条款原文：见本文件开头【统一授权条款】引用的 NASA Images and Media Usage Guidelines 段落原文。
+该图署名信息（CMS 元数据原样）：（NASA 官网素材库未标注任何第三方版权人）
+文件大小：6719344 字节（6.41 MB）
+文件头：GIF89a    帧数 n_frames：25    尺寸 size：1024x683    md5前12位：2de000a3a4dc
+验真结论：合格（要求 头=GIF87a/GIF89a、帧数>=20、横向>=640、1MB<=字节<=8MB）
+----------------------------------------------------------------------------------------------------
+本地文件名：彗星漫天.gif
+原始 URL：https://assets.science.nasa.gov/content/dam/science/cds/svs/a010000/a013600/a013622/cluttered_comets.gif
+素材详情页：https://science.nasa.gov/image-detail/amf-50fb4d33-ee25-4bbd-b32b-a0091bd31105/
+内容描述：掠日彗星群充满星空的可视化动画
+授权条款名：Public Domain（美国公有领域，NASA Media Usage Guidelines）/ 可商用 / 免署名
+授权条款原文：见本文件开头【统一授权条款】引用的 NASA Images and Media Usage Guidelines 段落原文。
+该图署名信息（CMS 元数据原样）：Credit: Genna Duberstein (NASA SVS 制作人员)
+文件大小：7920077 字节（7.55 MB）
+文件头：GIF89a    帧数 n_frames：38    尺寸 size：1440x810    md5前12位：7277cd3dbae1
+验真结论：合格（要求 头=GIF87a/GIF89a、帧数>=20、横向>=640、1MB<=字节<=8MB）
+----------------------------------------------------------------------------------------------------
+本地文件名：伽马星雨.gif
+原始 URL：https://assets.science.nasa.gov/content/dam/science/cds/svs/a010000/a011900/a011947/Fermi_Rain.gif
+素材详情页：https://science.nasa.gov/image-detail/amf-eb76cc7d-1d5f-4db5-8811-60b4a5c35ca9/
+内容描述：费米卫星探测到的伽马射线耀发“星雨”
+授权条款名：Public Domain（美国公有领域，NASA Media Usage Guidelines）/ 可商用 / 免署名
+授权条款原文：见本文件开头【统一授权条款】引用的 NASA Images and Media Usage Guidelines 段落原文。
+该图署名信息（CMS 元数据原样）：Credit: NASA/DOE/Fermi LAT Collaboration
+文件大小：6728850 字节（6.42 MB）
+文件头：GIF89a    帧数 n_frames：69    尺寸 size：1100x1100    md5前12位：9ab4c5695d96
+验真结论：合格（要求 头=GIF87a/GIF89a、帧数>=20、横向>=640、1MB<=字节<=8MB）
+----------------------------------------------------------------------------------------------------
+本地文件名：金星掠影.gif
+原始 URL：https://assets.science.nasa.gov/content/dam/science/cds/svs/a010000/a014000/a014095/WISPR_Magellan_3rdFlyby.gif
+素材详情页：https://science.nasa.gov/image-detail/amf-c8b51f21-8fc8-47ee-a157-3429323298ac/
+内容描述：帕克探测器飞掠金星，雷达地形与星空轨迹交替溶解
+授权条款名：Public Domain（美国公有领域，NASA Media Usage Guidelines）/ 可商用 / 免署名
+授权条款原文：见本文件开头【统一授权条款】引用的 NASA Images and Media Usage Guidelines 段落原文。
+该图署名信息（CMS 元数据原样）：Credit: NASA/APL/NRL (black and white image), Magellan Team/JPL/USGS (color image)
+文件大小：6607637 字节（6.30 MB）
+文件头：GIF89a    帧数 n_frames：34    尺寸 size：1042x1042    md5前12位：db1c9c1780de
+验真结论：合格（要求 头=GIF87a/GIF89a、帧数>=20、横向>=640、1MB<=字节<=8MB）
+----------------------------------------------------------------------------------------------------
+本地文件名：彩焰喷流.gif
+原始 URL：https://assets.science.nasa.gov/content/dam/science/cds/svs/a010000/a014200/a014217/AGN_jets_.GIF
+素材详情页：https://science.nasa.gov/image-detail/amf-cdec3d20-051e-42d8-9341-b70191ec7e56/
+内容描述：活动星系核喷流与气体云的彩色湍流模拟
+授权条款名：Public Domain（美国公有领域，NASA Media Usage Guidelines）/ 可商用 / 免署名
+授权条款原文：见本文件开头【统一授权条款】引用的 NASA Images and Media Usage Guidelines 段落原文。
+该图署名信息（CMS 元数据原样）：Credit: NASA's Goddard Space Flight Center/R. Tanner and K. Weaver
+文件大小：4351042 字节（4.15 MB）
+文件头：GIF89a    帧数 n_frames：48    尺寸 size：800x450    md5前12位：6bd9b1a0aa0a
+验真结论：合格（要求 头=GIF87a/GIF89a、帧数>=20、横向>=640、1MB<=字节<=8MB）
+----------------------------------------------------------------------------------------------------
+
+【试过但不合格 / 未采用的来源，逐条说明】
+ - wallhaven / pixabay / archive.org / commons.wikimedia.org / coverr / mixkit / blender.org / huggingface.co / raw.githubusercontent.com：本机不通或被拦，未取用。
+ - media.giphy.com、tenor：用户上传内容默认不可商用，按要求整体排除，未下载任何文件。
+ - images-api.nasa.gov（NASA 影像 API）：接口本身可达，但 media_type=gif 返回 0 条；对 751 个 nasa_id 逐条调用 asset 清单，0 个 .gif 文件 —— 该接口只有静态 JPG，用户设想的“NASA 影像接口给 .gif”不成立。
+ - NOAA Ocean Motion / PMEL / NHC / USGS / 国会图书馆：站点可达但页面里只有导航按钮类 GIF，没有可作全屏壁纸的动图；www.usgs.gov 直连 403/405。
+ - GitHub license:cc0-1.0 搜索：命中的壁纸仓库（rose-pine/wallpapers 等）以静态 PNG 为主，未找到符合“抽象动图+>=640宽+>=20帧”的 CC0 GIF，故未采用。
+ - NASA 候选中因“画面带文字/字幕/图例/坐标网格/航天器标注”被剔除的典型：SDO X2.5 耀发三联图、Sunspot Metamorphosis、OpenUniverse 超新星（SURVEY TIME 字样）、Corona/Fire（百万度字样）、GR_Constellations（星座连线标注）、Fermi 全天图（坐标网格）、Snowbands（色标+经纬度）、SWOT（明信片大字）、Synchrotron_Polarization（Magnetic field lines 字样）、1ES1927（另有 NSF/NRAO 第三方版权）、ISS 舱内/舱外、COMSATCOM 示意图、OSBP 卡通、perihelion23（日期字幕）、01~10 号 SDO 系列（左下角字幕条）。
+ - 帧数或尺寸不达标被剔除：nasa_246297(8帧)、nasa_693650(2帧)、sc_1428532/1428512(3~4帧)、sc_1236375(4帧)、sc_1467778/1197396(12帧)、sc_1417889(17帧)、sc_1452859(16帧)、nasa_155045(18帧)、sc_1417246(14帧)、nasa_877244(16帧)、nasa_246936(17帧)、nasa_37879(18帧)、sc_1417937(19帧)。
+
+【备选（同样已通过验真，可随时替换）】
+ - sc_1488176.gif  Tides_global.gif  1280x720 25帧 2.22MB  Credit: NASA's Conceptual Animation Lab  （raw/ 目录内）
+ - nasa_935748.gif periodic-flow-mix 646x486 392帧 2.28MB  无第三方署名  （raw/ 目录内）
+ - sc_1436487.gif  comets_vaporize   1440x810 20帧 4.73MB  Credit: Genna Duberstein  （raw/ 目录内）

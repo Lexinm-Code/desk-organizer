@@ -2,7 +2,7 @@
 """桌面收纳盒
 
 一个悬浮的桌面图标收纳盒：
-- 双击桌面空白处 / 双击托盘图标 / 全局热键 唤出，鼠标移开自动隐藏
+- 双击桌面空白处 / 双击托盘图标 唤出，鼠标移开自动隐藏
 - 右上角图钉可固定窗口（固定后不再自动隐藏，方便往里拖图标）
 - 拖入的图标一律以"快捷方式"存放，绝不移动原文件
 - 桌面快捷方式拖入时会从桌面移除原图标，右键盒内图标可"恢复到原来的位置"
@@ -57,16 +57,17 @@ open(_启动日志路径, "w", encoding="utf-8").close()
 写启动日志("脚本开始执行")
 
 from PyQt5.QtCore import (Qt, QRect, QSize, QTimer, QEvent, pyqtSignal, QMimeData,
-                          QFileInfo, QSharedMemory, QAbstractNativeEventFilter)
+                          QFileInfo, QAbstractNativeEventFilter, QThread)
 写启动日志("PyQt5.QtCore 加载完成")
 from PyQt5.QtGui import (QColor, QCursor, QFont, QIcon, QImage, QImageReader,
                          QKeySequence, QDrag, QPainter, QPixmap, QGuiApplication)
 from PyQt5.QtWidgets import (QApplication, QAction, QCheckBox, QDialog, QFrame,
                              QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMenu,
                              QMessageBox, QPushButton, QKeySequenceEdit, QScrollArea,
-                             QSpinBox, QStyle, QSystemTrayIcon, QTabBar, QTabWidget,
+                             QSpinBox, QStyle, QSystemTrayIcon, QSlider,
                              QToolButton, QVBoxLayout, QWidget, QFileIconProvider,
-                             QStackedWidget, QLineEdit, QComboBox)
+                             QStackedWidget, QLineEdit, QComboBox, QListWidget,
+                             QListWidgetItem, QFileDialog)
 写启动日志("PyQt5 界面库全部加载完成")
 
 import win32api
@@ -79,6 +80,9 @@ import winsound  # 内置库：播 Windows 系统音效，给盒内图标做音�
 from 桌面钩子 import 桌面双击钩子
 写启动日志("鼠标钩子模块加载完成，开始建界面")
 
+import 动态壁纸 as 动态壁纸模块  # 动态壁纸引擎（GIF + 视频，贴在桌面图标底下那层）
+动态壁纸模块.写日志 = 写启动日志  # 引擎内部的报错统一进启动日志，方便排查
+
 # ---------------- 常量与配置 ----------------
 
 # 程序目录：打包后（PyInstaller）sys.frozen=True，exe 在 sys.executable 的父目录；
@@ -90,7 +94,7 @@ if getattr(sys, 'frozen', False):
 else:
     程序目录 = os.path.dirname(os.path.abspath(__file__))  # 开发时：源码所在目录
 数据目录 = os.path.join(程序目录, "收纳盒数据")
-版本 = "1.0.3"  # 托盘"关于"对话框显示用（1.0.3：图片按需小尺寸解码 + 图标缓存 + 系统图标取够用档）
+版本 = "1.0.10"  # 托盘"关于"对话框显示用（1.0.10：动态壁纸支持视频，mp4/webm/mkv 等静音循环）
 配置文件 = os.path.join(数据目录, "配置.json")
 内部拖放格式 = "application/x-shouna-tiaomu"
 非法文件字符 = re.compile(r'[\\/:*?"<>|]')
@@ -212,8 +216,10 @@ def 查开机自启():
 最小高 = 320
 # 判定"鼠标贴到窗口边缘、进入缩放状态"的边带宽度（物理像素）
 缩放宽 = 7
-# 图标默认间距（像素）：图标之间的空隙 + 页面内边距，用户可在设置里改
+# 图标默认间距（像素）：图标之间的空隙 + 页面内边距，用户在设置里拖滑杆改
 默认图标间距 = 6
+# 滑杆能拖到的最大间距（再大就空得没边了，30 已经是很疏的一档）
+间距上限 = 30
 # 图标按钮固定大小（盒内图标按钮本身的尺寸）
 图标按钮宽 = 62
 图标按钮高 = 68
@@ -229,24 +235,32 @@ def 加载配置():
     except Exception:
         数据 = {}
     配置 = {
-        "热键": 数据.get("热键", "Ctrl+Alt+S"),
         "固定": bool(数据.get("固定", False)),
         # 记住的窗口尺寸，第一次使用时用默认尺寸
         "宽": int(数据.get("宽", 默认宽)),
         "高": int(数据.get("高", 默认高)),
-        # 图标之间的间距 + 页面内边距
-        "图标间距": int(数据.get("图标间距", 默认图标间距)),
+        # 图标之间的间距 + 页面内边距（滑杆拖出来的，读回来兜一层范围）
+        "图标间距": max(0, min(间距上限, int(数据.get("图标间距", 默认图标间距)))),
         # 音效提示开关（悬停"叮" / 单击"嗒" / 双击"咚"），默认开
         "音效": bool(数据.get("音效", True)),
-        # 常用置顶：打开次数多的图标自动排最前（默认关，避免和用户手动排序打架）
-        "常用置顶": bool(数据.get("常用置顶", False)),
-        # 按类型自动归类：拖入文件时按后缀分进 文档/图片/视频/音乐/程序/压缩包/其他
+        # 按类型自动归类：拖入文件时按后缀分进 文档/图片/视频/音乐/软件/压缩包/其他
         "自动分类": bool(数据.get("自动分类", True)),
         # 屏幕边缘唤出：鼠标顶住窗口停靠的那条屏幕边约 0.3 秒自动弹出（拖到哪边认哪边）
         "边缘唤出": bool(数据.get("边缘唤出", True)),
-        # 配色主题：深色 / 浅色 / 玻璃
+        # 配色主题：深色 / 浅色 / 玻璃 / 青墨 / 暖沙
         "主题": str(数据.get("主题", "深色")),
-        "分类": 数据.get("分类") or [{"名称": "常用", "条目": []}],
+        # 桌面自动收纳（美化桌面）：桌面上新出现的散落文件自动搬进盒子对应分类，
+        # 桌面永远只剩他自己留的那几个图标——默认关，要他在设置里自己打开
+        "桌面自动收纳": bool(数据.get("桌面自动收纳", False)),
+        # 动态壁纸（GIF / 视频）：开启状态 + 当前用哪个素材 + 全屏时自动暂停
+        "壁纸开启": bool(数据.get("壁纸开启", False)),
+        "壁纸文件": str(数据.get("壁纸文件", "")),
+        "壁纸全屏暂停": bool(数据.get("壁纸全屏暂停", True)),
+        # 随包发的内置动图只往数据目录复制一次（他删了就不会再冒出来）
+        "壁纸素材已导入": bool(数据.get("壁纸素材已导入", False)),
+        # 新用户不再预置"常用"：删掉常用置顶功能后它只是个空标签，
+        # 首次启动由下面的预置逻辑建齐 全部/文档/图片/视频/音乐/软件/压缩包/其他
+        "分类": 数据.get("分类") or [],
         # 类型分类只预置一次：用户之后删掉的分类不会被重新造出来
         "类型分类已预置": bool(数据.get("类型分类已预置", False)),
     }
@@ -254,7 +268,7 @@ def 加载配置():
         分类.setdefault("名称", "未命名")
         分类.setdefault("条目", [])
     if not 配置["类型分类已预置"]:
-        # 第一次启动：左边分类栏常驻建好"全部"总览 + 七种类型分类。
+        # 第一次启动：左边分类栏常驻建好"全部"总览 + 各类型分类。
         # "全部"是虚拟分类（聚合视图，不存文件），永远排最前面
         if not any(c.get("虚拟") for c in 配置["分类"]):
             配置["分类"].insert(0, {"名称": "全部", "条目": [], "虚拟": True})
@@ -270,17 +284,96 @@ def 加载配置():
                 pass
         配置["类型分类已预置"] = True
         保存配置()
-    # 双区导航归属（每次加载重算）：预置类型分类和"全部"走左边按钮列，
-    # 用户自己的分类（常用/魔兽争霸/以后新建的）走顶部标签栏
-    类型名集 = {名 for 名, _组 in 类型分类表} | {"其他"}
+    # 老配置里残留的"类型"键清掉：以前它决定分类走左栏还是顶部标签栏，
+    # 现在导航只剩左边一列，这个键没人用了
     for 分类 in 配置["分类"]:
-        分类["类型"] = bool(分类.get("虚拟")) or 分类["名称"] in 类型名集
+        分类.pop("类型", None)
 
 
 def 保存配置():
     os.makedirs(数据目录, exist_ok=True)
     with open(配置文件, "w", encoding="utf-8") as f:
         json.dump(配置, f, ensure_ascii=False, indent=2)
+
+
+# ---------------- 单实例锁 ----------------
+# 以前用 Qt 的 QSharedMemory，一旦进程被强杀（任务管理器结束任务、程序崩溃、
+# 直接断电），Windows 那个内核对象句柄可能没人回收，之后每次启动都提示
+# "收纳盒已经在运行了"——可托盘里根本没有图标，只能重启电脑才能解开。
+# 现在改成锁文件：里面只写"当前持有者的进程号"。启动时看一眼：
+#   进程号还活着 → 确实有第二个收纳盒，拦下来；
+#   进程号早就没了 → 那是上次留下的死锁，直接接管，照样能开。
+锁文件 = os.path.join(数据目录, "运行锁.txt")
+
+
+def 查进程活着(进程号):
+    """探测某进程号是不是真的还在跑。
+    0x1000 = PROCESS_QUERY_LIMITED_INFORMATION，不需要管理员权限也探得到别人的进程。
+    光看 OpenProcess 成不成功会误判：进程已经退出、但还有别处（资源管理器、
+    启动它的父进程、任务管理器）攥着它的句柄没放，内核对象就没销毁，
+    OpenProcess 照样成功——死锁又变成"打不开"。所以再问一次 GetExitCodeProcess：
+    只有返回 STILL_ACTIVE(259) 才算真活着。"""
+    try:
+        进程号 = int(进程号)
+    except (TypeError, ValueError):
+        return False
+    if 进程号 <= 0:
+        return False
+    内核 = ctypes.windll.kernel32
+    try:
+        # 64 位系统上句柄是指针，必须声明 restype，默认 c_int 会把高位截掉
+        内核.OpenProcess.restype = ctypes.c_void_p
+        内核.OpenProcess.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]
+        句柄 = 内核.OpenProcess(0x1000, False, 进程号)
+        if not 句柄:
+            return False
+        try:
+            退出码 = ctypes.c_ulong(0)
+            内核.GetExitCodeProcess.restype = ctypes.c_int
+            内核.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+            if 内核.GetExitCodeProcess(句柄, ctypes.byref(退出码)):
+                return 退出码.value == 259   # 259 = STILL_ACTIVE
+            return True   # 问不到退出码（权限等意外），保守当作还活着
+        finally:
+            内核.CloseHandle(句柄)
+    except Exception:
+        return False
+
+
+def 抢单实例锁():
+    """占到锁就写入自己的进程号并返回 True；确认真有另一个收纳盒在跑返回 False。
+    锁机制自己出问题（比如数据目录只读）时一律放行——宁可多开一个，
+    也不能把用户挡在门外打不开。"""
+    try:
+        里面 = ""
+        if os.path.exists(锁文件):
+            try:
+                with open(锁文件, "r", encoding="utf-8") as f:
+                    里面 = f.read().strip()
+            except Exception:
+                里面 = ""
+        持有者 = int(里面) if 里面.isdigit() else 0
+        if 持有者 != os.getpid() and 查进程活着(持有者):
+            return False   # 对方还活着：本次不启动
+        os.makedirs(数据目录, exist_ok=True)
+        with open(锁文件, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+        return True
+    except Exception:
+        return True
+
+
+def 释放单实例锁():
+    """正常退出时删掉锁文件；别人的锁（进程号不是自己）不碰。"""
+    try:
+        if not os.path.exists(锁文件):
+            return
+        with open(锁文件, "r", encoding="utf-8") as f:
+            里面 = f.read().strip()
+        if 里面.isdigit() and int(里面) == os.getpid():
+            os.remove(锁文件)
+    except Exception:
+        pass
 
 
 # ---------------- 音效提示 ----------------
@@ -399,7 +492,7 @@ def 播放双击音效():
     ("图片", (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico", ".tiff", ".svg")),
     ("视频", (".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".webm", ".mpg")),
     ("音乐", (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".mid")),
-    ("程序", (".exe", ".lnk", ".msi", ".bat", ".cmd", ".url")),
+    ("软件", (".exe", ".lnk", ".msi", ".bat", ".cmd", ".url", ".appx", ".apk")),
     ("压缩包", (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2")),
 ]
 
@@ -471,6 +564,104 @@ def 唯一lnk名(文件夹, 基名):
 def 清理名称(名字, 兜底="未命名"):
     名字 = 非法文件字符.sub("", str(名字)).strip()
     return 名字 or 兜底
+
+
+# ---------------- 桌面自动收纳（设置里的"美化桌面"开关） ----------------
+# 用户反馈：Win11 桌面图标"老是自己乱"——系统自带的新版图标视图在这台机器上
+# 不接受外部摆位置（实测 LVM_SETITEMPOSITION32 全部返回失败、读位置恒为 (0,0)），
+# 所以与其去排它，不如让桌面上压根不留东西：新出现的散落文件自动进盒子。
+
+桌面扫描间隔毫秒 = 5000   # 5 秒看一眼桌面（只在开关打开时才真的动手）
+桌面稳定秒数 = 3          # 文件连续 3 秒没被改动才收，避免撞上"正在下载/正在保存"
+桌面忽略名称 = {"desktop.ini"}   # 系统占位文件，收了也没用
+
+
+def 是收纳盒自己的入口(路径):
+    """桌面上那个能打开收纳盒的快捷方式/程序，永远不能自动收走，
+    否则他自己都打不开自己了（历史上就差点出过这个事）。"""
+    名 = os.path.basename(路径).lower()
+    if "收纳盒" in 名:
+        return True
+    try:
+        if 名.endswith((".lnk", ".url")):
+            目标 = (取shell().CreateShortcut(路径).TargetPath or "").lower()
+            if 目标 and ("收纳盒" in 目标 or 目标.startswith(程序目录.lower())):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def 写自动收纳日志(文本):
+    """往数据目录里的 桌面自动收纳日志.txt 追加一行。
+    自动搬走的东西必须查得到去哪了，不然用户会以为文件丢了。"""
+    try:
+        with open(os.path.join(数据目录, "桌面自动收纳日志.txt"), "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {文本}\n")
+    except Exception:
+        pass
+
+
+# ---------------- 动态壁纸（GIF）集成 ----------------
+# 引擎本体在 动态壁纸.py。这里只管三件事：素材放哪、内置素材入库、出问题时闭嘴退回。
+
+壁纸素材子目录名 = "动态壁纸"   # 收纳盒数据\动态壁纸\
+
+
+def 取壁纸素材目录():
+    """每次现算，别在 import 时定死——冒烟测试会把 数据目录 换成临时目录。"""
+    return os.path.join(数据目录, 壁纸素材子目录名)
+
+
+if getattr(sys, "frozen", False):
+    # 打包版：随包发的动图在 _internal\壁纸素材 里（PyInstaller 的 datas 落点）
+    内置壁纸目录 = os.path.join(getattr(sys, "_MEIPASS", 程序目录), "壁纸素材")
+else:
+    内置壁纸目录 = os.path.join(程序目录, "壁纸素材")
+
+
+def 导入内置壁纸素材():
+    """第一次启动：把随包发的几张动图复制进 收纳盒数据\动态壁纸\。
+    只复制一次——他之后删掉的那张不会被"好心"塞回来。"""
+    if 配置.get("壁纸素材已导入"):
+        return
+    素材目录 = 取壁纸素材目录()
+    try:
+        os.makedirs(素材目录, exist_ok=True)
+        for 名 in os.listdir(内置壁纸目录):
+            if not 名.lower().endswith(".gif"):
+                continue
+            目标 = os.path.join(素材目录, 名)
+            if not os.path.exists(目标):
+                shutil.copy2(os.path.join(内置壁纸目录, 名), 目标)
+    except Exception as e:
+        写启动日志(f"内置壁纸素材复制失败（不影响程序）：{type(e).__name__}: {e}")
+    配置["壁纸素材已导入"] = True
+    保存配置()
+
+
+def 存进壁纸素材(路径):
+    """把任意一张 gif 收进素材目录（右键图标"设为动态壁纸"、从网上下载都走这里），
+    返回素材目录里的那份路径。复制失败就退回原路径。"""
+    素材目录 = 取壁纸素材目录()
+    try:
+        os.makedirs(素材目录, exist_ok=True)
+        目标 = os.path.join(素材目录, os.path.basename(路径))
+        if os.path.normcase(目标) != os.path.normcase(路径):
+            shutil.copy2(路径, 目标)
+        return 目标
+    except Exception:
+        return 路径
+
+
+def 托盘气泡(托盘, 文本):
+    """托盘右下角冒一句小提示。壁纸开关、自动收纳都靠它给反馈；出错绝不能影响主流程。"""
+    if 托盘 is None:
+        return
+    try:
+        托盘.showMessage("桌面收纳盒", 文本, QSystemTrayIcon.Information, 2500)
+    except Exception:
+        pass
 
 
 # ---------------- 图标 ----------------
@@ -655,11 +846,9 @@ class 盒内图标(QToolButton):
         return os.path.join(数据目录, self.所属["名称"], self.条目["文件"])
 
     def _open_item(self):
-        """打开条目（双击或菜单），顺手记一次打开数（常用置顶用）"""
+        """打开条目（双击或菜单）"""
         try:
             os.startfile(self.绝对路径())
-            self.条目["打开次数"] = int(self.条目.get("打开次数", 0)) + 1
-            保存配置()
         except Exception:
             pass
         self.主窗.打开后收起()
@@ -697,7 +886,6 @@ class 盒内图标(QToolButton):
                     行.append("目标：" + sc.TargetPath)
         if self.条目.get("原路径"):
             行.append("原位置：" + self.条目["原路径"])
-        行.append("打开 %d 次" % int(self.条目.get("打开次数", 0)))
         return "<br>".join(行)
 
     def _排单击音(self):
@@ -773,6 +961,10 @@ class 盒内图标(QToolButton):
         菜单.addAction("📂 打开所在位置", self._open_folder)   # 槽名 ASCII！
         菜单.addAction("📋 复制文件路径", self._copy_path)      # 槽名 ASCII！
         菜单.addAction("🗂 查看文件属性", self._show_properties)  # 槽名 ASCII！
+        if 动态壁纸模块.是壁纸素材(self.绝对路径()):
+            # 动图/视频右键就能直接当壁纸用，不用去设置里翻路径
+            菜单.addAction("🌈 设为动态壁纸",
+                           lambda: self.主窗.设为动态壁纸(self.绝对路径()))
         菜单.addSeparator()
         if self.条目.get("原路径"):
             菜单.addAction("↩ 恢复到原来的位置",
@@ -920,11 +1112,11 @@ class 盒内图标(QToolButton):
         dlg.exec_()
 
 
-# ---------------- 分类页（简化版：只放图标网格，标题和管理菜单移到顶部标签栏） ----------------
+# ---------------- 分类页（只放图标网格 + 接收拖放；分类名和增删改名都在左栏按钮上） ----------------
 
 class 分类页(QWidget):
     """一个分类对应的页面，只负责展示该分类下的图标网格 + 接收拖放。
-    分类名称显示在主窗口的 QTabBar 标签上，分类管理（重命名/删除）改由标签栏右键处理。
+    分类名称显示在左边那一列按钮上，重命名/删除用按钮右键菜单处理。
     特点：图标从左上角自动排列；可画格子背景让每个图标格子位置清楚；图标间距可设置。"""
 
     def __init__(self, 主窗, 分类):
@@ -1003,9 +1195,6 @@ class 分类页(QWidget):
                         for t in c["条目"]]
         else:
             条目列表 = [(t, self.分类) for t in self.分类["条目"]]
-        # 常用置顶：按累计打开次数从多到少排（sort 稳定，次数相同保持原顺序）
-        if 配置.get("常用置顶", False):
-            条目列表.sort(key=lambda p: -int(p[0].get("打开次数", 0)))
         # 搜索过滤：只显示名称里含关键字的图标
         过滤字 = getattr(self.主窗, "搜索字", "").strip().lower()
         if 过滤字:
@@ -1161,7 +1350,7 @@ class 收纳盒窗口(QWidget):
         self.设置钮.setObjectName("固定钮")  # 复用现有按钮样式
         self.设置钮.setText("⚙️")
         self.设置钮.setCursor(Qt.PointingHandCursor)
-        self.设置钮.setToolTip("设置：窗口大小 / 图标间距")
+        self.设置钮.setToolTip("设置：窗口大小 / 图标间距滑杆 / 配色 / 桌面自动收纳 / 动态壁纸")
         self.设置钮.clicked.connect(self._show_settings)  # 槽名必须 ASCII！
 
         # 赞助按钮：低调灰色小图标，悬停变彩色
@@ -1200,8 +1389,8 @@ class 收纳盒窗口(QWidget):
         self.搜索框.textChanged.connect(self._on_search)  # 槽名 ASCII！
         内.addWidget(self.搜索框)
 
-        # 分类导航分两区：左边 = 类型分类按钮列（全部/文档/图片…），
-        # 右上 = 用户自己的分类标签栏（常用/魔兽争霸/新建的），右下 = 图标页
+        # 分类导航只有一列（左边）：「＋新建」按钮钉在最上面，下面依次是
+        # 全部 / 预置类型分类 / 用户自己新建的分类，从上往下堆
         主体行 = QHBoxLayout()
         主体行.setContentsMargins(0, 2, 0, 0)
         主体行.setSpacing(6)
@@ -1212,6 +1401,21 @@ class 收纳盒窗口(QWidget):
         侧栏列 = QVBoxLayout(self.侧栏容器)
         侧栏列.setContentsMargins(0, 0, 0, 0)
         侧栏列.setSpacing(4)
+
+        # "+" 新建分类按钮：固定在这列最顶部，就在"全部"按钮上面
+        self.新建钮 = QToolButton()
+        self.新建钮.setObjectName("新建分类")
+        self.新建钮.setText("＋ 新建")
+        self.新建钮.setCursor(Qt.PointingHandCursor)
+        self.新建钮.setToolTip("新建一个自己的分类，建好就排在这列下面")
+        self.新建钮.clicked.connect(self._add_category)  # 槽名必须 ASCII！
+        侧栏列.addWidget(self.新建钮)
+
+        # 分类按钮全装进这个子布局：刷新时只重建它，碰不到上面的"＋"
+        self._分类列 = QVBoxLayout()
+        self._分类列.setContentsMargins(0, 0, 0, 0)
+        self._分类列.setSpacing(4)
+        侧栏列.addLayout(self._分类列)
         侧栏列.addStretch(1)  # 末尾弹性留白：按钮始终从顶部开始堆
         self._侧栏按钮 = []   # 刷新全部 时重建
         主体行.addWidget(self.侧栏容器)
@@ -1219,33 +1423,7 @@ class 收纳盒窗口(QWidget):
         右列 = QVBoxLayout()
         右列.setSpacing(4)
 
-        标签栏行 = QHBoxLayout()
-        标签栏行.setContentsMargins(0, 0, 0, 0)
-        标签栏行.setSpacing(4)
-
-        self.标签栏 = QTabBar()
-        self.标签栏.setObjectName("分类标签栏")
-        self.标签栏.setDocumentMode(True)      # 让标签和下方内容无缝衔接
-        self.标签栏.setUsesScrollButtons(True)  # 标签多了自动出现左右箭头
-        self.标签栏.setTabsClosable(False)      # 关掉默认的"×"关闭按钮（用右键菜单删分类）
-        self.标签栏.setMovable(False)           # 不让用户拖动标签改顺序（简化逻辑）
-        self.标签栏.currentChanged.connect(self._on_tab_changed)  # 切换标签时更新页面
-        # 标签上右键 → 重命名/删除分类；空白处右键 → 新建分类
-        self.标签栏.customContextMenuRequested.connect(self._on_tab_menu)
-        self.标签栏.setContextMenuPolicy(Qt.CustomContextMenu)
-        标签栏行.addWidget(self.标签栏, 1)
-
-        # "+"新建分类按钮，固定在标签栏最右边（新建的分类都进顶部标签栏）
-        self.新建钮 = QToolButton()
-        self.新建钮.setObjectName("新建分类")
-        self.新建钮.setText("＋")
-        self.新建钮.setCursor(Qt.PointingHandCursor)
-        self.新建钮.setToolTip("新建分类")
-        self.新建钮.clicked.connect(self._add_category)  # 槽名必须 ASCII！
-        标签栏行.addWidget(self.新建钮)
-        右列.addLayout(标签栏行)
-
-        # QStackedWidget：每次只显示一个分类的图标页面，两套导航都能切换它
+        # QStackedWidget：每次只显示一个分类的图标页面
         self.页面栈 = QStackedWidget()
         self.页面栈.setObjectName("分类页面栈")
         右列.addWidget(self.页面栈, 1)
@@ -1263,10 +1441,18 @@ class 收纳盒窗口(QWidget):
         self._贴边次数 = 0
         # 用户把窗口拖到屏幕哪条边贴住（上/左/右），边缘唤出就只认那几条边
         self._停靠边 = set()
-        # 双区分类导航：页面栈索引 = 配置["分类"] 索引，两张映射表换算导航内部序号
-        self._导航同步 = False
-        self._标签映射 = []
+        # 左边一列分类导航：页面栈索引 = 配置["分类"] 索引，映射表换算按钮自身序号
         self._侧栏映射 = []
+
+        # 桌面自动收纳：托盘引用由 main() 建好托盘后回填；扫描器 5 秒一跳，
+        # 真正的开关判断在 _scan_desktop 里（配置["桌面自动收纳"] 关着就直接返回）
+        self.托盘 = None
+        self.壁纸 = None   # 壁纸管理器由 main() 建好 Qt 事件循环环境后回填
+        self._桌面稳定 = {}   # 桌面路径 -> (大小, 修改时间, 第一次看到的时间)
+        self._桌面收纳计时 = QTimer(self)
+        self._桌面收纳计时.setInterval(桌面扫描间隔毫秒)
+        self._桌面收纳计时.timeout.connect(self._scan_desktop)  # 槽名必须 ASCII！
+        self._桌面收纳计时.start()
 
         self.show_request.connect(self.toggle)  # 鼠标钩子线程 → 主线程
         self.刷新全部()
@@ -1276,9 +1462,9 @@ class 收纳盒窗口(QWidget):
     # --- 刷新与自动隐藏 ---
 
     def 刷新全部(self):
-        """重建两套分类导航 + 页面：左边按钮列 = 类型分类（全部/文档/图片…），
-        顶部标签栏 = 用户自己的分类（常用/魔兽争霸/新建的）。
-        页面栈顺序永远与 配置["分类"] 一致，两套导航用映射表换算索引。"""
+        """重建左边那一列分类按钮 + 所有页面：从上到下依次是
+        全部 / 预置类型分类 / 用户自己新建的分类（"＋新建"按钮不参与重建，永远在最顶上）。
+        页面栈顺序永远与 配置["分类"] 一致，按钮序号用 _侧栏映射 换算成分类索引。"""
         原来的索引 = self.页面栈.currentIndex()
         # 清空页面栈（旧页面会被 deleteLater 释放）
         while self.页面栈.count():
@@ -1287,14 +1473,11 @@ class 收纳盒窗口(QWidget):
             if w:
                 w.setParent(None)  # 同重建网格：立刻摘掉，防止旧页面残留
                 w.deleteLater()
-        # 清空顶部标签栏和左栏按钮
-        while self.标签栏.count():
-            self.标签栏.removeTab(0)
+        # 清空左栏按钮
         for 钮 in self._侧栏按钮:
             钮.setParent(None)
             钮.deleteLater()
         self._侧栏按钮 = []
-        self._标签映射 = []  # 顶部标签序号 → 分类索引
         self._侧栏映射 = []  # 左栏按钮序号 → 分类索引
         for 索引, 分类 in enumerate(配置["分类"]):
             页面 = 分类页(self, 分类)
@@ -1304,78 +1487,42 @@ class 收纳盒窗口(QWidget):
                 数目 = sum(len(c["条目"]) for c in 配置["分类"] if not c.get("虚拟"))
             else:
                 数目 = len(分类["条目"])
-            if 分类.get("类型"):
-                # 左栏按钮：横排文字，点它切换分类；右键可改名/删除（"全部"除外）
-                钮 = QToolButton()
-                钮.setObjectName("类型侧栏钮")
-                钮.setText(f"{分类['名称']} ({数目})")
-                钮.setCheckable(True)
-                钮.setCursor(Qt.PointingHandCursor)
-                钮.clicked.connect(lambda _=False, i=索引: self._跳转分类(i))  # 槽名 ASCII！
-                if 分类.get("虚拟"):
-                    钮.setToolTip("所有分类的总览，拖文件到这里会自动按类型归类")
-                else:
-                    钮.setToolTip("右键可重命名或删除")
-                    钮.setContextMenuPolicy(Qt.CustomContextMenu)
-                    钮.customContextMenuRequested.connect(
-                        lambda _p, i=索引: self._on_side_menu(i))
-                # 插到末尾 stretch 之前：按钮从顶部开始一个个堆
-                self.侧栏容器.layout().insertWidget(len(self._侧栏按钮), 钮)
-                self._侧栏按钮.append(钮)
-                self._侧栏映射.append(索引)
+            # 横排文字的按钮，点它切换分类；右键可改名/删除（"全部"是总览，不给删）
+            钮 = QToolButton()
+            钮.setObjectName("类型侧栏钮")
+            钮.setText(f"{分类['名称']} ({数目})")
+            钮.setCheckable(True)
+            钮.setCursor(Qt.PointingHandCursor)
+            钮.clicked.connect(lambda _=False, i=索引: self._跳转分类(i))  # 槽名 ASCII！
+            if 分类.get("虚拟"):
+                钮.setToolTip("所有分类的总览，拖文件到这里会自动按类型归类")
             else:
-                self._标签映射.append(索引)
-                self.标签栏.addTab(f"{分类['名称']}  ({数目})")
+                钮.setToolTip("右键可重命名或删除")
+                钮.setContextMenuPolicy(Qt.CustomContextMenu)
+                钮.customContextMenuRequested.connect(
+                    lambda _p, i=索引: self._on_side_menu(i))
+            self._分类列.addWidget(钮)
+            self._侧栏按钮.append(钮)
+            self._侧栏映射.append(索引)
         # 尽量停在原来正看着的分类上（原索引可能被删了，就切到相邻的）
         if self.页面栈.count():
             self._跳转分类(max(0, min(原来的索引, self.页面栈.count() - 1)))
 
-    def _on_tab_changed(self, 标签序):
-        """顶部标签栏切换：标签序 是"栏内序号"，查映射表换成真正的分类索引"""
-        if self._导航同步 or 标签序 < 0 or 标签序 >= len(self._标签映射):
-            return
-        self._跳转分类(self._标签映射[标签序])
-
     def _跳转分类(self, 索引):
-        """统一的切换分类入口：翻页面 + 同步两套导航的高亮（_导航同步 防信号回环）"""
+        """统一的切换分类入口：翻页面 + 把左栏对应按钮点亮"""
         if 索引 < 0 or 索引 >= self.页面栈.count():
             return
-        self._导航同步 = True
-        try:
-            self.页面栈.setCurrentIndex(索引)
-            标签序 = self._标签映射.index(索引) if 索引 in self._标签映射 else -1
-            if self.标签栏.currentIndex() != 标签序:
-                self.标签栏.setCurrentIndex(标签序)
-            for 序, 钮 in enumerate(self._侧栏按钮):
-                钮.setChecked(索引 == self._侧栏映射[序])
-        finally:
-            self._导航同步 = False
+        self.页面栈.setCurrentIndex(索引)
+        for 序, 钮 in enumerate(self._侧栏按钮):
+            钮.setChecked(索引 == self._侧栏映射[序])
 
     def _on_side_menu(self, 索引):
-        """左边类型分类按钮的右键菜单：重命名 / 删除（和顶部标签一样）"""
+        """左边分类按钮的右键菜单：重命名 / 删除"""
         菜单 = QMenu(self)
         菜单.addAction("重命名分类…", lambda: self._重命名分类(索引))
         菜单.addAction("删除分类…", lambda: self._删除分类(索引))
-        菜单.exec_(QCursor.pos())
-
-    def _on_tab_menu(self, 位置):
-        """标签栏右键菜单：
-        - 点在某个标签上 → 重命名 / 删除 那个分类
-        - 点在标签栏空白处（没点到标签）→ 新建分类"""
-        全局位置 = self.标签栏.mapToGlobal(位置)
-        # tabAt 返回 -1 表示点在空白处，否则是点中的标签索引
-        点中的标签索引 = self.标签栏.tabAt(位置)
-        菜单 = QMenu(self)
-        if 0 <= 点中的标签索引 < len(self._标签映射):
-            # 顶部标签只装用户自己的分类：栏内序号先换算成真正的分类索引
-            # （"全部"等类型分类在左栏，右键保护在它们自己的按钮上）
-            分类索引 = self._标签映射[点中的标签索引]
-            菜单.addAction("重命名分类…", lambda: self._重命名分类(分类索引))
-            菜单.addAction("删除分类…", lambda: self._删除分类(分类索引))
-            菜单.addSeparator()
-        # 无论点在标签还是空白处，都可以新建
         菜单.addAction("新建分类…", self._add_category)  # 槽名必须 ASCII！
-        菜单.exec_(全局位置)
+        菜单.exec_(QCursor.pos())
 
     def _重命名分类(self, 索引):
         """重命名指定索引的分类：检查重名、改文件夹名、刷新"""
@@ -1646,13 +1793,12 @@ class 收纳盒窗口(QWidget):
 
     def eventFilter(self, 对象, 事件):
         """整个根窗口都能拖，但以下控件自身需要交互，不能让拖窗口逻辑拦截：
-        - QToolButton（固定/关闭/+ 新建按钮）
-        - QTabBar（标签栏点击切换）
+        - QToolButton（固定/关闭/＋新建/分类按钮）
         - 盒内图标（拖拽/双击打开）
         - QScrollArea / QStackedWidget（滚动页面）"""
         if 事件.type() == QEvent.MouseButtonPress and 事件.button() == Qt.LeftButton:
             # 交互控件白名单：这些控件上的左键按下不拖窗口
-            if isinstance(对象, (QToolButton, QTabBar, QScrollArea, QStackedWidget,
+            if isinstance(对象, (QToolButton, QScrollArea, QStackedWidget,
                                 QDialog, QLineEdit, QComboBox, QSpinBox)):
                 return super().eventFilter(对象, 事件)
             名称 = 对象.objectName() if hasattr(对象, 'objectName') else ""
@@ -1672,8 +1818,10 @@ class 收纳盒窗口(QWidget):
 
     # --- 拖入 / 移动 / 恢复 ---
 
-    def 拖入(self, 分类, 路径列表):
+    def 拖入(self, 分类, 路径列表, 静默=False):
         """把外部文件收进分类。
+        静默=True 用于"桌面自动收纳"后台扫描：出错不弹窗（否则每 5 秒弹一次），
+        只往 桌面自动收纳日志.txt 记一行。
         关键规则（按用户要求 2026-10-11 改）：
         - 来源在桌面（不管啥后缀）→ 移动原文件进盒子，记录原路径可恢复
         - 来源不在桌面（比如开始菜单、下载文件夹）→ 在盒子里建快捷方式，不动原文件
@@ -1687,7 +1835,7 @@ class 收纳盒窗口(QWidget):
                 continue
             if 分类.get("虚拟"):
                 # 拖到「全部」总览页 = 默认落点：自动按类型归进对应分类；
-                # 类型对不上分类就进第一个真实分类（一般是"常用"）
+                # 类型对不上分类就进第一个真实分类（一般是"文档"）
                 分类 = next((c for c in 配置["分类"]
                              if not c.get("虚拟")
                              and c["名称"] == 取类型分类(路径)),
@@ -1697,7 +1845,7 @@ class 收纳盒窗口(QWidget):
                 os.makedirs(文件夹, exist_ok=True)
             elif 配置.get("自动分类", True):
                 # 按类型自动归类：只往"已经存在的"对应分类里放；
-                # 该类型分类还没建就老老实实进当前拖入的分类，绝不自作主张新建标签
+                # 该类型分类还没建就老老实实进当前拖入的分类，绝不自作主张新建分类
                 命中 = next((c for c in 配置["分类"]
                              if c["名称"] == 取类型分类(路径)), None)
                 if 命中 is not None and 命中 is not 分类:
@@ -1738,6 +1886,9 @@ class 收纳盒窗口(QWidget):
                     原路径 = ""  # 没移动过，恢复就只是删盒子里的东西
 
             except Exception as e:
+                if 静默:
+                    写自动收纳日志(f"收失败：{路径} —— {type(e).__name__}: {e}")
+                    continue
                 QMessageBox.warning(self, "收纳失败", f"{路径}\n{e}")
                 continue
             分类["条目"].append({"名称": 基名, "文件": lnk名, "原路径": 原路径})
@@ -1745,6 +1896,119 @@ class 收纳盒窗口(QWidget):
         if 成功:
             保存配置()
             self.刷新全部()
+
+    def _scan_desktop(self):
+        """桌面自动收纳（设置里"美化桌面"那个开关）的扫描器。
+        开关关着就立刻返回，几乎不占资源。
+        只收"桌面上散落的文件"：文件夹、系统占位的 desktop.ini、
+        还有能打开收纳盒自己的那个快捷方式，一律不碰。"""
+        if not 配置.get("桌面自动收纳", False):
+            if self._桌面稳定:
+                self._桌面稳定.clear()
+            return
+        桌面 = 获取桌面路径()
+        现在 = time.time()
+        try:
+            清单 = os.listdir(桌面)
+        except Exception:
+            return
+        待收 = []
+        见到 = set()
+        for 名 in 清单:
+            全 = os.path.normpath(os.path.join(桌面, 名))
+            见到.add(全)
+            if 名 in 桌面忽略名称 or os.path.isdir(全):
+                continue
+            if 是收纳盒自己的入口(全):
+                continue
+            try:
+                状态 = os.stat(全)
+            except Exception:
+                self._桌面稳定.pop(全, None)
+                continue
+            键 = (状态.st_size, 状态.st_mtime)
+            旧 = self._桌面稳定.get(全)
+            if 旧 is None or 旧[0] != 键[0] or 旧[1] != 键[1]:
+                # 刚看到、或者还在被写（大小/时间变了）→ 重新开始计时，不跟下载抢文件
+                self._桌面稳定[全] = (键[0], 键[1], 现在)
+                continue
+            if 现在 - 旧[2] < 桌面稳定秒数:
+                continue
+            待收.append(全)
+        # 他自己删掉/挪走的，从观察表里抹掉，别让表越长越大
+        for 消失 in [p for p in self._桌面稳定 if p not in 见到]:
+            self._桌面稳定.pop(消失, None)
+        if not 待收:
+            return
+
+        落点 = next((c for c in 配置["分类"] if c.get("虚拟")), None) \
+            or next((c for c in 配置["分类"]), None)
+        if 落点 is None:
+            return
+        名单 = [os.path.basename(p) for p in 待收]
+        self.拖入(落点, 待收, 静默=True)
+        for p in 待收:
+            self._桌面稳定.pop(p, None)
+        收成 = [n for n in 名单 if not os.path.exists(os.path.join(桌面, n))]
+        if not 收成:
+            return
+        写自动收纳日志(f"自动收纳 {len(收成)} 个：{'、'.join(收成)}")
+        播放双击音效()  # 自动化干完活要出声，让他知道桌面又干净了一点
+        if self.托盘 is not None:
+            摘要 = "、".join(收成[:3]) + ("…" if len(收成) > 3 else "")
+            try:
+                self.托盘.showMessage("桌面收纳盒", f"已自动收纳 {len(收成)} 个：{摘要}",
+                                      QSystemTrayIcon.Information, 3000)
+            except Exception:
+                pass
+
+    # --- 动态壁纸 ---
+
+    def 设为动态壁纸(self, 路径):
+        """右键盒内动图/视频图标用：把它收进素材目录并立刻贴上，同时记住"壁纸开着"。"""
+        if not 动态壁纸模块.是壁纸素材(路径):
+            return
+        if self.壁纸 is None:
+            QMessageBox.information(self, "动态壁纸", "壁纸引擎还没准备好，稍后再试一次")
+            return
+        存好 = 存进壁纸素材(路径)
+        if not self.壁纸.换上(存好):
+            return
+        配置["壁纸开启"] = True
+        配置["壁纸文件"] = 存好
+        保存配置()
+        播放双击音效()
+        if self.托盘 is not None:
+            try:
+                self.托盘.showMessage("桌面收纳盒",
+                                      "动态壁纸已换成「%s」\n不想要了就去设置里把勾去掉。"
+                                      % os.path.splitext(os.path.basename(存好))[0],
+                                      QSystemTrayIcon.Information, 3000)
+            except Exception:
+                pass
+
+    def 按配置应用壁纸(self):
+        """照配置开/关壁纸；配置说要开但文件没了就 quietly 关掉。
+        已经贴着同一张就别重来（重贴会让动图跳回第一帧）。"""
+        if self.壁纸 is None:
+            return
+        if not 配置.get("壁纸开启", False):
+            if self.壁纸.在运行():
+                self.壁纸.停下()
+            return
+        路径 = 配置.get("壁纸文件", "")
+        if not 路径 or not os.path.exists(路径):
+            候选 = self.壁纸.列素材()
+            路径 = 候选[0] if 候选 else ""
+        if not 路径:
+            配置["壁纸开启"] = False
+            if self.壁纸.在运行():
+                self.壁纸.停下()
+            return
+        if self.壁纸.在运行() and self.壁纸.当前 == 路径:
+            return
+        if self.壁纸.换上(路径):
+            配置["壁纸文件"] = 路径
 
     def 移动条目(self, 源分类名, 文件名, 目标分类, 目标文件名=None):
         """把源分类里的条目移到目标分类。
@@ -1828,18 +2092,280 @@ class 收纳盒窗口(QWidget):
         os.makedirs(os.path.join(数据目录, 名), exist_ok=True)
         配置["分类"].append({"名称": 名, "条目": []})
         保存配置()
-        # 刷新全部后，新分类是最后一个标签，直接切过去让用户可以立即往里拖图标
+        # 刷新后新分类排在左栏最下面，直接切过去让用户可以立即往里拖图标
         self.刷新全部()
-        最后索引 = self.标签栏.count() - 1
-        if 最后索引 >= 0:
-            self.标签栏.setCurrentIndex(最后索引)
-            self.页面栈.setCurrentIndex(最后索引)
+        self._跳转分类(len(配置["分类"]) - 1)
 
 
 # ---------------- 设置对话框 ----------------
 
+class 收图中止(Exception):
+    """干什么：他关了窗口但后台还在下，用它把下载循环打断，别硬拽着界面一起死。"""
+
+
+_放生的线程们 = []  # 关窗时还没跑完的线程挂这儿：断开信号后让它自己收摊，Qt 才不会崩
+
+
+class 找图线程(QThread):
+    """后台全网搜 GIF 动图（百度图片 → 360 图片 → GitHub 兜底），界面不卡死。
+    信号名必须用 ASCII——Qt 直连中文信号名会 UnicodeEncodeError。"""
+    progress = pyqtSignal(str)
+    done = pyqtSignal(object)
+
+    def __init__(self, 关键词, 目标目录, parent=None):
+        super().__init__(parent)
+        self.关键词 = 关键词
+        self.目标目录 = 目标目录
+        self.要停 = False
+
+    def 停下(self):
+        self.要停 = True
+
+    def _报(self, 文本):
+        if self.要停:
+            raise 收图中止()
+        self.progress.emit(文本)
+
+    def run(self):
+        结果 = []
+        try:
+            结果 = 动态壁纸模块.全网找GIF(self.关键词, self.目标目录, 进度=self._报)
+        except 收图中止:
+            return                      # 他已经关窗了，安静收摊
+        except Exception as e:  # 引擎内部已经兜过一层，这里只是最后一道保险
+            结果 = []
+            写启动日志(f"网上找图线程出错：{type(e).__name__}: {e}")
+        self.done.emit(结果)
+
+
+class 收图线程(QThread):
+    """后台把一条链接里的动图收进素材目录，界面不卡死。
+    信号名必须用 ASCII——Qt 直连中文信号名会 UnicodeEncodeError。"""
+    progress = pyqtSignal(str)
+    done = pyqtSignal(object)
+
+    def __init__(self, 网址, 目标目录, parent=None):
+        super().__init__(parent)
+        self.网址 = 网址
+        self.目标目录 = 目标目录
+        self.要停 = False
+
+    def 停下(self):
+        self.要停 = True
+
+    def _报(self, 文本):
+        if self.要停:
+            raise 收图中止()
+        self.progress.emit(文本)
+
+    def run(self):
+        结果 = None
+        try:
+            结果 = 动态壁纸模块.存网上动图(self.网址, self.目标目录, 进度=self._报)
+        except 收图中止:
+            return                      # 他已经关窗了，安静收摊
+        except ValueError as e:      # 引擎给的就是人话，直接上屏
+            self.progress.emit(str(e))
+        except Exception as e:
+            self.progress.emit("收不下来：%s（网络不通或对方不让直接下）" % type(e).__name__)
+            写启动日志(f"收图线程出错：{type(e).__name__}: {e}")
+        self.done.emit(结果)
+
+
+def 放生(线):
+    """窗口要关了而线程还在跑：让它脱离窗口自己活完，信号先断开，免得回不到界面而崩。"""
+    if 线 is None:
+        return None
+    线.停下()
+    for 信号 in (线.progress, 线.done):
+        try:
+            信号.disconnect()
+        except Exception:
+            pass          # 没连过就会抛，正常
+    try:
+        线.finished.disconnect()
+    except Exception:
+        pass
+    线.finished.connect(lambda: _放生的线程们.remove(线) if 线 in _放生的线程们 else None)
+    线.setParent(None)
+    _放生的线程们.append(线)
+    return None
+
+
+class 网上找图对话框(QDialog):
+    """干什么：像搜索引擎一样全网找 GIF——中文关键词直接搜百度图片 / 360 图片，
+            下到的动图列在下面，双击就贴上桌面；也可以粘链接收单张。
+    怎么用：设置 → 动态壁纸 → 「从网上找…」。上面一行粘链接收单张，下面搜索框直接打中文。
+    说明：搜到的图版权归原作者，自己用没问题；要商用请找明确可商用的来源。
+    网络不通或被限流只提示，不卡界面。"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("从网上找动态壁纸（GIF）")
+        self.resize(680, 500)
+        self.线程 = None
+        self.收线程 = None
+        self.选中路径 = ""
+        self.上次提示 = ""
+        布局 = QVBoxLayout(self)
+
+        说明 = QLabel("上面一行：粘链接收单张（网页上右键图片 →「复制图片地址」，粘进来点「收下这张」，粘网页链接也行）。\n"
+                      "下面搜索框：全网搜。直接打中文就行（极光 / 星空 / 猫 / 赛博城市），"
+                      "程序去百度图片、360 图片里找会动的 GIF，两家都没有再翻 GitHub；"
+                      "下到的图会列在下面，双击就贴上桌面。\n"
+                      "网上搜来的图版权归原作者，自己用没问题；要商用请找明确可商用的来源。")
+        说明.setWordWrap(True)
+        布局.addWidget(说明)
+
+        链接行 = QHBoxLayout()
+        self.链接框 = QLineEdit()
+        self.链接框.setPlaceholderText("粘动图链接：https://…/xxx.gif（粘网页链接也行，程序去里面找 gif）")
+        self.链接框.returnPressed.connect(lambda: self._收链接())  # 中文槽名必须 lambda 包
+        链接行.addWidget(self.链接框, 1)
+        self.收钮 = QPushButton("收下这张")
+        self.收钮.clicked.connect(lambda: self._收链接())  # 中文槽名必须 lambda 包
+        链接行.addWidget(self.收钮)
+        布局.addLayout(链接行)
+
+        行 = QHBoxLayout()
+        self.关键词框 = QLineEdit()
+        self.关键词框.setPlaceholderText("全网搜：极光 / 星空 / 猫 / 赛博城市…（中文直接打）")
+        self.关键词框.returnPressed.connect(lambda: self._搜())  # 中文槽名必须 lambda 包
+        行.addWidget(self.关键词框, 1)
+        self.搜钮 = QPushButton("全网搜")
+        self.搜钮.clicked.connect(lambda: self._搜())  # 中文槽名必须 lambda 包
+        行.addWidget(self.搜钮)
+        布局.addLayout(行)
+
+        self.列表 = QListWidget()
+        self.列表.setIconSize(QSize(96, 54))
+        self.列表.itemDoubleClicked.connect(lambda _项: self._用选中的())  # lambda 包一层
+        self.列表.itemSelectionChanged.connect(lambda: self._刷状态())  # 中文槽名 lambda 包
+        布局.addWidget(self.列表, 1)
+
+        self.状态 = QLabel("还没搜。打两个字就行，比如：极光、星空、猫。")
+        self.状态.setWordWrap(True)
+        布局.addWidget(self.状态)
+
+        底 = QHBoxLayout()
+        提示 = QLabel("网上搜来的图版权归原作者：自己用没问题，要商用请先看来源。")
+        提示.setWordWrap(True)
+        底.addWidget(提示, 1)
+        self.用钮 = QPushButton("用它当壁纸")
+        self.用钮.clicked.connect(lambda: self._用选中的())  # 中文槽名必须 lambda 包
+        self.用钮.setEnabled(False)
+        关钮 = QPushButton("关闭")
+        关钮.clicked.connect(self.reject)
+        底.addWidget(self.用钮)
+        底.addWidget(关钮)
+        布局.addLayout(底)
+
+    def _提示(self, 文本):
+        self.上次提示 = 文本
+        self.状态.setText(文本)
+
+    def _搜(self):
+        关键词 = self.关键词框.text().strip()
+        if not 关键词:
+            self.状态.setText("先填个关键词。")
+            return
+        if self.线程 is not None and self.线程.isRunning():
+            self.状态.setText("上一次还在下载，稍等一下。")
+            return
+        self.列表.clear()
+        self.用钮.setEnabled(False)
+        self.搜钮.setEnabled(False)
+        self.状态.setText("正在全网搜「%s」…（百度图片 → 360 图片 → GitHub）" % 关键词)
+        self.线程 = 找图线程(关键词, 取壁纸素材目录(), self)
+        self.线程.progress.connect(lambda 文本: self._提示(文本))
+        self.线程.done.connect(lambda 结果: self._搜完了(结果))
+        self.线程.start()
+
+    def _收链接(self):
+        网址 = self.链接框.text().strip()
+        if not 网址:
+            self.状态.setText("先把链接粘进来（网页上右键图片 →「复制图片地址」）。")
+            return
+        if self.收线程 is not None and self.收线程.isRunning():
+            self.状态.setText("上一张还在下，稍等一下。")
+            return
+        self.收钮.setEnabled(False)
+        self.状态.setText("正在收这张动图…")
+        self.收线程 = 收图线程(网址, 取壁纸素材目录(), self)
+        self.收线程.progress.connect(lambda 文本: self._提示(文本))
+        self.收线程.done.connect(lambda 结果: self._收完了(结果))
+        self.收线程.start()
+
+    def _收完了(self, 结果):
+        self.收钮.setEnabled(True)
+        if not 结果:
+            return
+        路径, 来源 = 结果
+        self._加进列表(路径, 来源)
+        self.链接框.clear()
+        self.列表.setCurrentRow(self.列表.count() - 1)
+        self.用钮.setEnabled(True)
+        self.状态.setText("收好了，双击这张就贴上桌面。")
+
+    def _加进列表(self, 路径, 来源):
+        for i in range(self.列表.count()):  # 同一张不重复列
+            if (self.列表.item(i).data(Qt.UserRole) or "") == 路径:
+                self.列表.setCurrentRow(i)
+                return
+        项 = QListWidgetItem("🖼 %s　（来自 %s）" % (os.path.basename(路径), 来源))
+        项.setData(Qt.UserRole, 路径)
+        项.setToolTip(路径)
+        try:
+            预览 = QPixmap(路径)          # GIF 取第一帧当缩略图，一眼能挑
+            if not 预览.isNull():
+                项.setIcon(QIcon(预览.scaled(96, 54, Qt.KeepAspectRatio,
+                                             Qt.SmoothTransformation)))
+        except Exception:
+            pass
+        self.列表.addItem(项)
+
+    def _搜完了(self, 结果):
+        self.搜钮.setEnabled(True)
+        self.列表.clear()  # 兜一层：万一上一次的结果还挂着，别让它混进来
+        for 路径, 仓库 in (结果 or []):
+            self._加进列表(路径, 仓库)
+        if self.列表.count():
+            self.列表.setCurrentRow(0)
+            self.用钮.setEnabled(True)
+            self.状态.setText("下到 %d 张，双击一张就能贴上桌面。" % self.列表.count())
+        else:
+            self.用钮.setEnabled(False)
+            self.状态.setText((self.上次提示 or "没搜到合格的动图。") +
+                              "　换个词再试，好搜的是：%s" % 动态壁纸模块.推荐词)
+
+    def _刷状态(self):
+        self.用钮.setEnabled(self.列表.currentItem() is not None)
+
+    def _用选中的(self):
+        项 = self.列表.currentItem()
+        if 项 is None:
+            self.状态.setText("先选中一张。")
+            return
+        self.选中路径 = 项.data(Qt.UserRole) or ""
+        if self.选中路径:
+            self.accept()
+
+    def reject(self):
+        self._收摊()
+        super().reject()
+
+    def accept(self):
+        self._收摊()
+        super().accept()
+
+    def _收摊(self):
+        """关窗前把还在跑的下载线程放生：硬等会卡住界面，直接销毁会让 Qt 崩。"""
+        self.线程 = 放生(self.线程)
+        self.收线程 = 放生(self.收线程)
+
+
 class 设置对话框(QDialog):
-    """收纳盒统一设置对话框：窗口大小 + 图标间距（热键已移除）。
+    """收纳盒统一设置对话框：窗口大小 + 图标间距 + 外观 + 美化桌面 + 动态壁纸。
     每改一个设置项点"应用"后立即生效，点"确定"则自动应用并关闭。"""
 
     def __init__(self, parent, 主窗):
@@ -1876,22 +2402,31 @@ class 设置对话框(QDialog):
         高行.addStretch()
         布局.addLayout(高行)
 
-        # ---------- 第 2 组：图标间距 ----------
+        # ---------- 第 2 组：图标间距（滑杆，拖一下就实时变，不用填数字） ----------
         组2 = QLabel("🔢 图标间距")
         组2.setStyleSheet("font-weight: 600; margin-top: 8px;")
         布局.addWidget(组2)
 
         间距行 = QHBoxLayout()
-        间距行.addWidget(QLabel("图标之间的空隙："))
-        self.间距输入 = QSpinBox()
-        self.间距输入.setRange(0, 30)
-        self.间距输入.setSingleStep(1)
-        self.间距输入.setValue(配置.get("图标间距", 默认图标间距))
-        self.间距输入.setToolTip("调整后图标之间的距离和格子的密度都会变")
-        间距行.addWidget(self.间距输入)
-        间距行.addWidget(QLabel("像素"))
-        间距行.addStretch()
+        间距行.addWidget(QLabel("紧"))
+        self.间距滑杆 = QSlider(Qt.Horizontal)
+        self.间距滑杆.setObjectName("间距滑杆")
+        self.间距滑杆.setRange(0, 间距上限)
+        self.间距滑杆.setSingleStep(1)
+        self.间距滑杆.setPageStep(2)
+        self.间距滑杆.setValue(max(0, min(间距上限, int(配置.get("图标间距", 默认图标间距)))))
+        self.间距滑杆.setToolTip("按住滑块左右拖：图标之间的距离立刻跟着变，松手就存下来\n"
+                                 "往左挤到 0（图标挨在一起），往右最多 30（格子之间很空）")
+        间距行.addWidget(self.间距滑杆, 1)
+        间距行.addWidget(QLabel("松"))
+        # 数值标签就放在滑杆右边，拖动时实时刷新，省得他自己数格子
+        self.间距值标 = QLabel(f"{self.间距滑杆.value()} 像素")
+        self.间距值标.setMinimumWidth(52)
+        self.间距值标.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        间距行.addWidget(self.间距值标)
         布局.addLayout(间距行)
+        # 注意：Qt 的 connect 不能直连中文方法名（会 UnicodeEncodeError），一律 lambda 包一层
+        self.间距滑杆.valueChanged.connect(lambda 值: self._间距变了(值))
 
         # ---------- 第 3 组：开机自启 ----------
         组3 = QLabel("🚀 开机自启动")
@@ -1919,19 +2454,14 @@ class 设置对话框(QDialog):
         )
         布局.addWidget(self.音效勾选)
 
-        # ---------- 第 5 组：排序与归类 ----------
-        组5 = QLabel("🗂 排序与归类")
+        # ---------- 第 5 组：归类 ----------
+        组5 = QLabel("🗂 归类")
         组5.setStyleSheet("font-weight: 600; margin-top: 8px;")
         布局.addWidget(组5)
 
-        self.置顶勾选 = QCheckBox("常用置顶（打开次数多的图标自动排到最前面）")
-        self.置顶勾选.setChecked(bool(配置.get("常用置顶", False)))
-        self.置顶勾选.setToolTip("开着时显示顺序按打开次数排；手动拖拽排序照样能拖，\n但下次刷新时顺序会被使用频率排回去")
-        布局.addWidget(self.置顶勾选)
-
         self.自动类勾选 = QCheckBox("按类型自动归类（拖入文件时自动分进对应分类）")
         self.自动类勾选.setChecked(bool(配置.get("自动分类", True)))
-        self.自动类勾选.setToolTip("拖入文件时：如果你已经建了 文档/图片/视频/音乐/程序/压缩包/其他 这些分类，\n会按后缀自动分进对应分类；没建就不动（不会自己冒出新分类标签）\n不想被自动分就取消勾选")
+        self.自动类勾选.setToolTip("拖入文件时：如果你已经建了 文档/图片/视频/音乐/软件/压缩包/其他 这些分类，\n会按后缀自动分进对应分类；没建就不动（不会自己冒出新分类标签）\n不想被自动分就取消勾选")
         布局.addWidget(self.自动类勾选)
 
         # ---------- 第 6 组：外观与唤出 ----------
@@ -1954,6 +2484,69 @@ class 设置对话框(QDialog):
         self.边缘勾选.setChecked(bool(配置.get("边缘唤出", True)))
         布局.addWidget(self.边缘勾选)
 
+        # ---------- 第 7 组：美化桌面 ----------
+        组7 = QLabel("🧹 美化桌面")
+        组7.setStyleSheet("font-weight: 600; margin-top: 8px;")
+        布局.addWidget(组7)
+
+        self.桌面收纳勾选 = QCheckBox("桌面自动收纳（桌面上出现新文件就自动搬进盒子对应分类）")
+        self.桌面收纳勾选.setChecked(bool(配置.get("桌面自动收纳", False)))
+        self.桌面收纳勾选.setToolTip(
+            "打开以后：桌面上散落的文件（截图、下载的东西、文档）会被自动搬进盒子，\n"
+            "按后缀分好类，桌面就一直干干净净——再也不会「图标越用越乱」。\n"
+            "（Win11 新版桌面的图标位置由系统自己管，外面改不了，所以这里靠「少留东西」来保持整齐。）\n\n"
+            "不会碰这些东西：桌面上的文件夹、桌面自带占位文件、还有能打开收纳盒的那个快捷方式。\n"
+            "搬走的都记在 收纳盒数据\\桌面自动收纳日志.txt，盒子里右键图标还能「恢复到原位置」。\n"
+            "不想用就取消勾选，立刻停止，已经收进来的东西仍留在盒子里。"
+        )
+        布局.addWidget(self.桌面收纳勾选)
+
+        # ---------- 第 8 组：动态壁纸（GIF） ----------
+        组8 = QLabel("🌈 动态壁纸")
+        组8.setStyleSheet("font-weight: 600; margin-top: 8px;")
+        布局.addWidget(组8)
+
+        self.壁纸勾选 = QCheckBox("启用桌面动态壁纸（动图 / 视频贴在桌面图标底下，不动系统壁纸设置）")
+        self.壁纸勾选.setToolTip(
+            "打开后：一张会动的 GIF 或一段视频铺在桌面最底下，图标照常点、照常拖，只是背景动起来了。\n"
+            "视频静音循环播放（mp4 / webm / mkv / mov / avi 都行），解码器随包带着，不用另装。\n"
+            "它不改注册表、不改系统壁纸，出事自动摘掉，桌面不会崩。\n"
+            "全屏打游戏 / 放映 PPT 时会自动歇着不占显卡（可以下面单独关）。"
+        )
+        # 注意：槽名必须 ASCII，一律 lambda 包一层
+        self.壁纸勾选.stateChanged.connect(lambda _状态: self._壁纸设置变了())
+        布局.addWidget(self.壁纸勾选)
+
+        素材行 = QHBoxLayout()
+        素材行.addWidget(QLabel("素材："))
+        self.壁纸选择 = QComboBox()
+        self.壁纸选择.setToolTip("这里列的是随包发的动图 + 你自己下载/存进来的动图、视频\n"
+                               "选中哪张就立刻换上；盒子里右键 GIF / 视频图标也能「设为动态壁纸」")
+        self.壁纸选择.currentIndexChanged.connect(lambda _序: self._壁纸设置变了())
+        素材行.addWidget(self.壁纸选择, 1)
+        网上钮 = QPushButton("从网上找…")
+        网上钮.setToolTip("输入中文关键词，全网搜 GIF 动图（百度图片、360 图片，搜不到再翻 GitHub），\n"
+                          "下到的会出现在上面那个下拉里；也能直接粘图片链接收单张。\n"
+                          "网上搜来的图版权归原作者：自用没问题，要商用请先看来源。")
+        网上钮.clicked.connect(lambda: self._从网上找())  # 中文槽名必须 lambda 包
+        素材行.addWidget(网上钮)
+        本地钮 = QPushButton("选本地动图/视频…")
+        本地钮.setToolTip("从电脑上挑一张 GIF 或一段视频当壁纸\n"
+                        "（mp4 / webm / mkv / mov / avi 都行，会复制一份进素材目录，原文件不动）")
+        本地钮.clicked.connect(lambda: self._选本地gif())  # 中文槽名必须 lambda 包
+        素材行.addWidget(本地钮)
+        布局.addLayout(素材行)
+
+        self.壁纸暂停勾选 = QCheckBox("全屏游戏 / 放映时自动暂停壁纸（推荐开着，省显卡不抢帧数）")
+        self.壁纸暂停勾选.setToolTip("程序检测到有全屏程序或放映在最前面，就把壁纸（动图/视频）停下来，退出全屏自动接着放。")
+        self.壁纸暂停勾选.stateChanged.connect(lambda _状态: self._壁纸设置变了())
+        布局.addWidget(self.壁纸暂停勾选)
+
+        self._刷新壁纸素材列表()
+        self.壁纸勾选.setChecked(bool(配置.get("壁纸开启", False)))
+        self.壁纸暂停勾选.setChecked(bool(配置.get("壁纸全屏暂停", True)))
+        self._壁纸控件可用性()
+
         # ---------- 按钮行 ----------
         布局.addStretch(1)
         行 = QHBoxLayout()
@@ -1972,6 +2565,98 @@ class 设置对话框(QDialog):
         行.addWidget(取消)
         布局.addLayout(行)
 
+    def _间距变了(self, 值):
+        """滑杆拖动：立刻把新间距套到每个分类页上，右边标签同步显示数字。
+        只重排网格、不重建图标按钮，所以拖起来是跟手的，不会闪。"""
+        s = max(0, min(间距上限, int(值)))
+        配置["图标间距"] = s
+        self.间距值标.setText(f"{s} 像素")
+        主窗 = self.主窗
+        if 主窗 is None:
+            return
+        for i in range(主窗.页面栈.count()):
+            页 = 主窗.页面栈.widget(i)
+            if isinstance(页, 分类页):
+                页.应用间距()
+                # 间距变了，一行能放几个也可能变；只有真变了才重排（避免抖动）
+                if 页._当前列数() != 页._上次列数:
+                    页.重建网格()
+        保存配置()
+
+    def _壁纸素材们(self):
+        """能选的动图/视频清单：引擎在就交给它（带大小筛选），引擎没起来就自己扫目录。"""
+        主窗 = self.主窗
+        if 主窗 is not None and getattr(主窗, "壁纸", None) is not None:
+            return 主窗.壁纸.列素材()
+        出 = []
+        见过的 = set()
+        for 目录 in (取壁纸素材目录(), 内置壁纸目录):
+            if not os.path.isdir(目录):
+                continue
+            for 名 in sorted(os.listdir(目录)):
+                if 动态壁纸模块.是壁纸素材(名) and 名 not in 见过的:
+                    见过的.add(名)
+                    出.append(os.path.join(目录, 名))
+        return 出
+
+    def _刷新壁纸素材列表(self, 想选=""):
+        """重填下拉框；刷完尽量保持他原来选的那张还在原位。"""
+        原选中 = self.壁纸选择.currentData() if self.壁纸选择.count() else ""
+        self.壁纸选择.blockSignals(True)  # 填充过程别触发"换图"
+        self.壁纸选择.clear()
+        for 路径 in self._壁纸素材们():
+            名 = os.path.splitext(os.path.basename(路径))[0]
+            self.壁纸选择.addItem(名, 路径)
+        目标 = 想选 or 原选中 or 配置.get("壁纸文件", "")
+        序 = self.壁纸选择.findData(目标) if 目标 else -1
+        if 序 < 0:
+            序 = 0 if self.壁纸选择.count() else -1
+        self.壁纸选择.setCurrentIndex(序)
+        self.壁纸选择.blockSignals(False)
+
+    def _壁纸控件可用性(self):
+        有素材 = self.壁纸选择.count() > 0
+        self.壁纸勾选.setEnabled(有素材)
+        self.壁纸选择.setEnabled(有素材 and self.壁纸勾选.isChecked())
+        if not 有素材:
+            self.壁纸勾选.setText("启用桌面动态壁纸（素材目录里还没有动图或视频，先去网上找一张）")
+
+    def _壁纸设置变了(self):
+        """勾选 / 换图 / 暂停开关一动就立刻上墙，不用等他点应用。"""
+        配置["壁纸开启"] = self.壁纸勾选.isChecked() and self.壁纸选择.count() > 0
+        配置["壁纸全屏暂停"] = self.壁纸暂停勾选.isChecked()
+        选中 = self.壁纸选择.currentData() or ""
+        if 选中:
+            配置["壁纸文件"] = 选中
+        主窗 = self.主窗
+        if 主窗 is not None and getattr(主窗, "壁纸", None) is not None:
+            主窗.壁纸.设全屏暂停(配置["壁纸全屏暂停"])
+        self._壁纸控件可用性()
+        if 主窗 is not None:
+            主窗.按配置应用壁纸()
+        保存配置()
+
+    def _从网上找(self):
+        窗 = 网上找图对话框(self)
+        窗.exec_()
+        self._刷新壁纸素材列表(窗.选中路径)
+        self._壁纸控件可用性()
+        if 窗.选中路径:
+            self.壁纸勾选.setChecked(True)
+            self._壁纸设置变了()
+
+    def _选本地gif(self):
+        路径, _ = QFileDialog.getOpenFileName(
+            self, "选一张 GIF 动图或一段视频", 获取桌面路径(),
+            "动图 / 视频 (*.gif *.mp4 *.webm *.mkv *.mov *.m4v *.avi *.wmv);;GIF 动图 (*.gif);;所有文件 (*.*)")
+        if not 路径 or not 动态壁纸模块.是壁纸素材(路径):
+            return
+        存好 = 存进壁纸素材(路径)
+        self._刷新壁纸素材列表(存好)
+        self._壁纸控件可用性()
+        self.壁纸勾选.setChecked(True)
+        self._壁纸设置变了()
+
     def _apply_all(self):
         """把窗口大小、图标间距、开机自启都写进配置并立即生效。"""
         # 窗口大小
@@ -1979,17 +2664,19 @@ class 设置对话框(QDialog):
         配置["高"] = int(self.高输入.value())
         self.主窗.resize(配置["宽"], 配置["高"])
 
-        # 图标间距
-        配置["图标间距"] = int(self.间距输入.value())
+        # 图标间距（滑杆在拖动时已经实时生效并写盘了，这里再确认一次）
+        self._间距变了(self.间距滑杆.value())
         self.主窗.刷新全部()
 
         # 音效开关（全局配置即时生效，不用重启）
         配置["音效"] = self.音效勾选.isChecked()
 
-        # 排序 / 归类 / 边缘唤出（都是配置项，即时生效）
-        配置["常用置顶"] = self.置顶勾选.isChecked()
+        # 归类 / 边缘唤出（都是配置项，即时生效）
         配置["自动分类"] = self.自动类勾选.isChecked()
         配置["边缘唤出"] = self.边缘勾选.isChecked()
+
+        # 美化桌面：桌面自动收纳开关（扫描器每 5 秒自己看这个开关，打开立即开始干活）
+        配置["桌面自动收纳"] = self.桌面收纳勾选.isChecked()
 
         # 换肤：主题变了就整体重发样式表，立即生效
         新主题 = self.主题选择.currentText()
@@ -2019,16 +2706,21 @@ class 设置对话框(QDialog):
         """一键恢复默认值"""
         self.宽输入.setValue(默认宽)
         self.高输入.setValue(默认高)
-        self.间距输入.setValue(默认图标间距)
+        self.间距滑杆.setValue(默认图标间距)
         # 开机自启默认不开
         self.自启勾选.setChecked(False)
         # 音效提示默认开
         self.音效勾选.setChecked(True)
-        # 排序归类/外观默认：不置顶、自动分类开、边缘唤出开、深色主题
-        self.置顶勾选.setChecked(False)
+        # 归类/外观默认：自动分类开、边缘唤出开、深色主题
         self.自动类勾选.setChecked(True)
         self.边缘勾选.setChecked(True)
         self.主题选择.setCurrentText("深色")
+        # 美化桌面默认关（动他桌面的东西，必须他自己打开）
+        self.桌面收纳勾选.setChecked(False)
+        # 动态壁纸默认关（会一直占一层的显示资源，让他自己决定开不开）；
+        # 只关开关，已经下载好的素材一张都不删。
+        self.壁纸勾选.setChecked(False)
+        self.壁纸暂停勾选.setChecked(True)
         self._apply_all()
 
 
@@ -2083,11 +2775,15 @@ class 系统托盘(QSystemTrayIcon):
             "开发者：Lexinm-Code（GitHub）<br>"
             "联系邮箱：326495489@qq.com"
             "<hr>"
-            "· 双击桌面空白处 / 托盘图标 / 全局热键唤出，鼠标移开自动隐藏<br>"
-            "· 上方标签自定义分类，左侧类型分类（文档/图片/视频…），拖入自动归类<br>"
+            "· 双击桌面空白处 / 托盘图标唤出，鼠标移开自动隐藏<br>"
+            "· 左边一列分类：全部 / 文档 / 图片 / 视频 / 音乐 / 软件 / 压缩包 / 其他，"
+            "点最上面的「＋ 新建」可以加自己的分类，拖入自动归类<br>"
             "· 「全部」页总览所有图标；支持拖拽排序、右键打开位置 / 删除（进回收站）<br>"
             "· 边缘唤出：你把窗口贴到哪条屏幕边，就只认哪条边；游戏全屏时自动安静<br>"
-            "· 搜索过滤、常用置顶、图片缩略图、悬停详情<br>"
+            "· 搜索过滤、图片缩略图、悬停详情<br>"
+            "· 设置里图标间距改成滑杆，拖一下就实时变<br>"
+            "· 桌面自动收纳：桌面上出现新文件自动搬进盒子对应分类，桌面再也不乱<br>"
+            "· 动态壁纸：GIF 动图或视频（mp4/webm/mkv 等）贴在桌面图标底下，静音循环，不改系统壁纸，全屏自动暂停<br>"
             "· 五套皮肤、音效提示、图钉固定、开机自启"
             "<hr>"
             "感谢你选择桌面收纳盒，愿它让你的桌面从此整洁有序、图标随手可寻。<br>"
@@ -2311,27 +3007,12 @@ QToolButton#盒内图标 {
     color: @@图标文字@@; font-size: 8pt; padding: 3px 1px;
 }
 QToolButton#盒内图标:hover { background: @@图标悬停@@; }
-/* "+" 新建分类按钮 */
+/* "＋ 新建" 按钮：跟下面的分类按钮同宽同高，虚线框表示"这儿能加一个" */
 QToolButton#新建分类 {
     color: @@弱文字@@; background: @@新建底@@; border: 1px dashed @@新建边框@@;
-    border-radius: 8px; font-size: 14pt; padding: 2px 10px; min-width: 28px; max-width: 36px;
+    border-radius: 8px; padding: 5px 10px; font-size: 9pt; text-align: left;
 }
 QToolButton#新建分类:hover { color: @@反白@@; border-color: @@强调色@@; background: @@强调微底@@; }
-/* 分类标签栏 */
-QTabBar#分类标签栏 { background: transparent; }
-QTabBar#分类标签栏::tab {
-    color: @@弱文字@@; background: @@标签底@@; border: none;
-    border-top-left-radius: 8px; border-top-right-radius: 8px;
-    padding: 5px 12px; margin-right: 4px; font-size: 9pt;
-}
-QTabBar#分类标签栏::tab:hover { color: @@标题文字@@; background: @@标签悬停@@; }
-QTabBar#分类标签栏::tab:selected {
-    color: @@反白@@; background: @@强调底@@; border-bottom: 2px solid @@强调色@@;
-}
-QTabBar#分类标签栏::scroller { background: transparent; border: none; }
-QTabBar#分类标签栏::left-arrow, QTabBar#分类标签栏::right-arrow {
-    width: 16px; height: 16px; background: @@按钮背景@@; border-radius: 4px;
-}
 QWidget#类型侧栏 { background: transparent; }
 QToolButton#类型侧栏钮 {
     color: @@弱文字@@; background: @@标签底@@; border: none;
@@ -2373,6 +3054,11 @@ QComboBox { background: @@输入底@@; color: @@弹层字@@; border: 1px solid @
 QComboBox::drop-down { border: none; width: 22px; }
 QComboBox QAbstractItemView { background: @@弹层底@@; color: @@弹层字@@; selection-background-color: @@强调色@@; border: 1px solid @@弹层边框@@; }
 QInputDialog QLineEdit { background: @@输入底@@; color: @@弹层字@@; border: 1px solid @@输入边框@@; border-radius: 6px; padding: 4px; }
+QSlider::groove:horizontal { height: 6px; background: @@输入底@@; border: 1px solid @@输入边框@@; border-radius: 3px; }
+QSlider::sub-page:horizontal { background: @@强调色@@; border: 1px solid @@输入边框@@; border-radius: 3px; }
+QSlider::handle:horizontal { width: 14px; height: 14px; margin: -6px 0; border-radius: 8px; background: @@弹层底@@; border: 2px solid @@强调色@@; }
+QSlider::handle:horizontal:hover { background: @@强调色@@; }
+QSlider::handle:horizontal:pressed { background: @@强调色@@; }
 """
 
 
@@ -2405,14 +3091,13 @@ def main():
     app.setWindowIcon(生成程序图标())
     app.setStyleSheet(取样式表())
 
-    # 防止重复启动
-    单实例 = QSharedMemory("桌面收纳盒-单实例")
-    if not 单实例.create(1):
+    # 防止重复启动：看锁文件里记的进程号还活着没（详见"抢单实例锁"）
+    if not 抢单实例锁():
         # 已有一个收纳盒在运行（点窗口✕只是隐藏，进程仍在托盘，不算关闭）
-        写启动日志("检测到已有实例在运行，本次启动直接退出")
+        写启动日志("锁文件里的进程还活着，确认已有实例在运行，本次启动退出")
         QMessageBox.information(None, "桌面收纳盒", "收纳盒已经在运行了（看右下角托盘，双击它就能唤出）")
         return
-    写启动日志("单实例锁创建成功（说明之前没有残留进程）")
+    写启动日志("抢到单实例锁（之前的残留死锁会被自动接管）")
 
     首次 = not os.path.exists(配置文件)
     加载配置()
@@ -2425,6 +3110,24 @@ def main():
 
     主窗 = 收纳盒窗口()
     托盘 = 系统托盘(主窗)
+    主窗.托盘 = 托盘  # 桌面自动收纳收完东西要在托盘冒个泡
+
+    # 动态壁纸（GIF）：素材先入库 → 建引擎 → 照配置决定贴不贴。
+    # 整段包在 try 里：壁纸那一层出任何岔子都不能拖累收纳盒本体启动。
+    try:
+        导入内置壁纸素材()
+        主窗.壁纸 = 动态壁纸模块.壁纸管理器(
+            [取壁纸素材目录(), 内置壁纸目录],
+            状态变化=lambda 文本: 托盘气泡(托盘, 文本),
+            允许全屏暂停=bool(配置.get("壁纸全屏暂停", True)),
+        )
+        主窗.按配置应用壁纸()
+        写启动日志("动态壁纸引擎就绪：%s" % (
+            ("已贴上 " + os.path.basename(主窗.壁纸.当前)) if 主窗.壁纸.在运行() else "未开启"))
+    except Exception as e:
+        主窗.壁纸 = None
+        写启动日志("动态壁纸初始化失败（收纳盒其余功能不受影响）：%s: %s"
+                 % (type(e).__name__, e))
     写启动日志("主窗口和托盘图标创建完成")
 
     # 全局鼠标钩子：双击桌面空白处唤出（回调经信号转回主线程）
@@ -2449,6 +3152,12 @@ def main():
             钩子.stop()
         except Exception:
             pass
+        try:
+            if 主窗.壁纸 is not None:
+                主窗.壁纸.停下()  # 摘掉动图那一层，退出时别在桌面留个空窗
+        except Exception:
+            pass
+        释放单实例锁()  # 抹掉自己的锁，下次启动才不会被误判"已在运行"
 
     app.aboutToQuit.connect(_on_quit)
 

@@ -19,7 +19,13 @@ import win32con
 import win32gui
 
 # 钩子模块和主程序共用同一份启动日志，方便把"双击桌面"的判定过程也记录下来
-_钩子日志路径 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "启动日志.txt")
+# 打包成 exe 后 __file__ 指向 _internal/（PyInstaller 解压目录），日志会掉进那个
+# 依赖文件夹里，跟主程序那份（exe 旁边）分成两个文件。这里跟主程序口径一致：
+# 冻结模式认 exe 所在目录，开发模式认源码目录。
+if getattr(sys, "frozen", False):
+    _钩子日志路径 = os.path.join(os.path.dirname(sys.executable), "启动日志.txt")
+else:
+    _钩子日志路径 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "启动日志.txt")
 
 
 def 写钩子日志(内容):
@@ -85,12 +91,17 @@ class 鼠标结构(ctypes.Structure):
 
 
 class 命中信息(ctypes.Structure):
-    """LVHITTESTINFO"""
+    """LVHITTESTINFO，要带 iGroup 才是完整大小。
+    ★ 2026-11-05 踩过的坑：老版本只有 pt/flags/iItem/iSubItem（20 字节），
+      但 Win Vista 之后的通用控件（explorer 用的就是）会在第 24 字节写 iGroup，
+      我们只给 20 字节 → 越界 4 字节踩堆，表现为偶发的随机崩溃。
+      多留一个 int 不影响老版本（它只写前 20 字节）。"""
     _fields_ = [
         ("pt", 点),
         ("flags", wintypes.UINT),
         ("iItem", ctypes.c_int),
         ("iSubItem", ctypes.c_int),
+        ("iGroup", ctypes.c_int),
     ]
 
 

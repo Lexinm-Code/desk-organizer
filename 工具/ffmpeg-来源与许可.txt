@@ -1,0 +1,16 @@
+ffmpeg.exe 来源与许可
+====================
+
+版本：ffmpeg 9.0.2-essentials_build-www.gyan.dev
+来源：https://www.gyan.dev/ffmpeg/builds/  （essentials build）
+许可：GPLv3（该构建带 --enable-gpl --enable-version3）
+
+用途：桌面收纳盒的动态壁纸用它把视频（mp4/webm/mkv/mov/m4v/avi/wmv）
+      解成 rawvideo（BGRA）从管道送进来，静音循环贴在桌面图标层底下。
+      打包时由 PyInstaller 放进 _internal\ffmpeg.exe，程序运行时会自动找到；
+      源码运行时找的是 工具\ffmpeg.exe。
+
+体积：UPX 压缩后 33,099,264 字节（原始 105,423,872 字节）。
+
+换版本：从上面的地址下 essentials build，把 bin\ffmpeg.exe 换进本目录即可；
+        如需压体积，可用 upx -9 ffmpeg.exe。
